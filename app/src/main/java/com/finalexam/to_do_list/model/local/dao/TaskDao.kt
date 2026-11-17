@@ -3,6 +3,7 @@ package com.finalexam.to_do_list.model.local.dao
 import androidx.room.*
 import com.finalexam.to_do_list.model.local.entity.TaskEntity
 import com.finalexam.to_do_list.model.local.relation.HomeTask
+import com.finalexam.to_do_list.model.local.entity.TaskReminderEntity
 
 @Dao
 interface TaskDao {
@@ -26,4 +27,38 @@ interface TaskDao {
     @Insert fun insert(task: TaskEntity)
     @Update fun update(task: TaskEntity)
     @Query("DELETE FROM tasks WHERE id=:id") fun delete(id: String)
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    fun saveReminder(reminder: TaskReminderEntity)
+
+    @Query("""
+    DELETE FROM task_reminders
+    WHERE task_id = :taskId AND user_uid = :userUid
+    """)
+    fun deleteReminder(taskId: String, userUid: String)
+
+    @Query("""
+    SELECT * FROM task_reminders
+    WHERE user_uid = :userUid AND is_enabled = 1
+    """)
+    fun getEnabledReminders(userUid: String): List<TaskReminderEntity>
+
+    @Query("""
+    SELECT * FROM task_reminders
+    WHERE user_uid = :userUid
+    """)
+    fun getAllReminders(userUid: String): List<TaskReminderEntity>
+
+    @Query("""
+    UPDATE task_reminders
+    SET is_enabled = :enabled,
+        client_updated_at = :updatedAt
+    WHERE task_id = :taskId AND user_uid = :userUid
+    """)
+    fun updateReminderStatus(
+        taskId: String,
+        userUid: String,
+        enabled: Boolean,
+        updatedAt: Long
+    )
 }
