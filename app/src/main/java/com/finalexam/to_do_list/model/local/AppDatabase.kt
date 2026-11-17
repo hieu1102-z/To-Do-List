@@ -7,7 +7,9 @@ import androidx.room.RoomDatabase
 import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 import com.finalexam.to_do_list.model.local.dao.TaskDao
+import com.finalexam.to_do_list.model.local.dao.UserDao
 import com.finalexam.to_do_list.model.local.entity.*
+import java.security.MessageDigest
 
 @Database(entities = [UserEntity::class, CategoryEntity::class, CategoryMemberEntity::class,
     CategoryInvitationEntity::class, TaskEntity::class, TaskParticipantEntity::class,
@@ -15,13 +17,26 @@ import com.finalexam.to_do_list.model.local.entity.*
     version = 2, exportSchema = true)
 abstract class AppDatabase : RoomDatabase() {
     abstract fun tasks(): TaskDao
+    abstract fun users(): UserDao
 
     companion object {
         const val GUEST_DATABASE_NAME = "guest-workspace.db"
 
         fun guestBuilder(context: Context, name: String = GUEST_DATABASE_NAME): Builder<AppDatabase> =
+            builder(context, name, guest = true).addMigrations(MIGRATION_1_2)
+
+        fun accountFileName(uid: String): String {
+            require(uid.isNotBlank() && !uid.startsWith("local:"))
+            val hash = MessageDigest.getInstance("SHA-256").digest(uid.toByteArray(Charsets.UTF_8))
+                .joinToString("") { "%02x".format(it) }
+            return "account-$hash.db"
+        }
+
+        fun accountBuilder(context: Context, uid: String): Builder<AppDatabase> =
+            builder(context, accountFileName(uid), guest = false)
+
+        private fun builder(context: Context, name: String, guest: Boolean): Builder<AppDatabase> =
             Room.databaseBuilder(context.applicationContext, AppDatabase::class.java, name)
-                .addMigrations(MIGRATION_1_2)
                 .addCallback(object : Callback() {
                     override fun onCreate(db: SupportSQLiteDatabase) { SchemaSql.replaceEmptyRoomTables(db) }
                     override fun onOpen(db: SupportSQLiteDatabase) {
@@ -31,7 +46,7 @@ abstract class AppDatabase : RoomDatabase() {
                         db.beginTransaction()
                         try {
                             SchemaSql.installPartialIndexes(db)
-                            GuestBootstrap.initialize(db)
+                            if (guest) GuestBootstrap.initialize(db)
                             db.setTransactionSuccessful()
                         } finally { db.endTransaction() }
                     }

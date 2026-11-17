@@ -2,7 +2,7 @@
 
 Cấu trúc thư mục được dựng theo mục 5 và 5.1 của `../docs/Tuan_3.docx`, đối chiếu với `../docs/Tuần 1.docx`, `../docs/TodoList_DB_v2.dbml` và `../docs/Thiet-ke-chia-se-theo-danh-muc.md`.
 
-Đã triển khai trang chủ và đăng nhập theo [thiết kế Figma](https://www.figma.com/design/6abAD9XNzVCXCh4Mx4sBT3/to-do-app), bằng XML Layout và ViewBinding. Các phần chưa triển khai vẫn có `.gitkeep` để Git lưu cấu trúc.
+Đã triển khai trang chủ, đăng nhập và đăng ký bằng XML Layout/ViewBinding, dùng chung phong cách giao diện của [thiết kế Figma](https://www.figma.com/design/6abAD9XNzVCXCh4Mx4sBT3/to-do-app). Các phần chưa triển khai vẫn có `.gitkeep` để Git lưu cấu trúc.
 
 ## Chạy ứng dụng
 
@@ -17,9 +17,36 @@ Schema DBML v2 được kiểm tra bằng build APK, lint và 19 kiểm thử JV
 - Trang chủ: ngày hiện tại, tiến độ thực tế, Hôm nay / 7 ngày tới / Quá hạn / Đã xong, tìm kiếm, chọn ngày và lọc danh mục.
 - Công việc offline: tạo, sửa, xóa có xác nhận, hoàn thành/bỏ hoàn thành, tiêu đề, mô tả, danh mục, mức ưu tiên và hạn ngày/giờ. Dữ liệu khởi tạo trống; không tự chèn công việc mẫu trong Figma.
 - Đăng nhập email/mật khẩu bằng Firebase Authentication, hiện/ẩn mật khẩu, kiểm tra dữ liệu, trạng thái tải/lỗi, đặt lại mật khẩu qua email, đăng xuất và quay lại dùng offline. SDK quản lý phiên, ứng dụng không lưu mật khẩu.
+- Đăng ký với họ tên, email, mật khẩu và xác nhận mật khẩu; gửi/gửi lại email xác minh và tải lại trạng thái xác minh từ Firebase.
 - Trang chủ và các thao tác offline không bị chặn bởi đăng nhập. Điểm vào chia sẻ tại Danh mục hoặc Cá nhân yêu cầu đăng nhập. Chưa triển khai backend hay thao tác chia sẻ thực tế.
 
-## Chế độ khách
+## Đăng nhập email và hồ sơ tài khoản
+
+- Bật Firebase Console → Authentication → Sign-in method → Email/Password. Có thể tạo tài khoản ngay từ nút Đăng ký trong màn hình đăng nhập, hoặc đăng nhập bằng tài khoản đã tồn tại. [Hướng dẫn SDK](https://firebase.google.com/docs/auth/android/password-auth).
+- `FirebaseEmailAuthGateway` chỉ làm việc với Firebase Authentication; `AuthRepository` điều phối xác thực, lưu hồ sơ và hủy yêu cầu. Không lưu mật khẩu hoặc token trong Room, SavedState hay log. Firebase SDK quản lý phiên đăng nhập.
+- Chỉ báo đăng nhập thành công sau khi Firebase xác thực và hồ sơ được cache vào bảng `users`. DB hồ sơ riêng có tên `account-<SHA-256 của UID>.db`, dùng cùng schema 10 bảng v2 nhưng không bootstrap UID khách. Cập nhật hồ sơ bằng Upsert, không dùng REPLACE để tránh xóa user đang có khóa ngoại. `server_updated_at` chỉ giữ mốc máy chủ đã có, không giả lập bằng giờ thiết bị.
+- Hồ sơ cache gồm UID, email, email_key chuẩn hóa, họ tên, ảnh và trạng thái xác minh email do Firebase SDK cung cấp. Cờ xác minh cache phục vụ hiển thị, không thay thế việc backend kiểm tra token khi nhận lời mời.
+- ViewModel giữ trạng thái yêu cầu qua thay đổi cấu hình, chặn gửi lặp; Back/Tiếp tục offline hủy việc hoàn tất luồng đăng nhập. Nếu Firebase trả kết quả trễ sau khi hủy/đăng xuất, không phục hồi phiên đã hủy. Lỗi ghi hồ sơ không báo thành công và đăng xuất phiên vừa xác thực.
+- Khi ứng dụng tiếp tục chạy, có thể cache lại danh tính mà SDK đã khôi phục mà không yêu cầu nhập mật khẩu hay chặn trang chủ bằng mạng. Đăng xuất xóa phiên Firebase, giữ cache cục bộ và toàn bộ dữ liệu khách.
+- Trang chủ hiện vẫn là không gian offline cũ sau đăng nhập. Không tự đổi `local:<uuid>` trong task/category/membership sang Firebase UID; không nhập hoặc tải dữ liệu khách lên cloud. DB tài khoản mới chỉ cache hồ sơ, chưa có backend chia sẻ/đồng bộ hoặc bootstrap tài khoản trên máy chủ.
+- Kiểm thử chỉ chạy code/JVM với gateway giả lập và SQLite native: thành công/thất bại, validation, lỗi mạng/cấu hình, yêu cầu lặp, hủy/đăng xuất trong lúc xử lý, khôi phục phiên, profile Upsert và cách ly dữ liệu khách. Không gửi yêu cầu đăng nhập hoặc email đặt lại mật khẩu đến project thật trong test; không mở emulator/Activity. Chưa xác nhận đăng nhập bằng tài khoản thật.
+
+Kết quả bổ sung chức năng đăng nhập: 35/35 test JVM vượt qua (19 test dữ liệu hiện có và 16 test đăng nhập/hồ sơ), `assembleDebug` thành công và `lintDebug` không có lỗi; vẫn còn cảnh báo lint. APK thử nghiệm tại `app/build/outputs/apk/debug/app-debug.apk`.
+
+## Đăng ký và xác minh email
+
+- Đường vào: Cá nhân → Đăng nhập → Chưa có tài khoản? Đăng ký. Biểu mẫu yêu cầu họ tên không trống, email hợp lệ, mật khẩu ít nhất 6 ký tự và xác nhận trùng khớp. Chính sách mật khẩu chặt hơn do Firebase Console cấu hình vẫn được SDK kiểm tra; không cắt khoảng trắng của mật khẩu.
+- Tạo tài khoản qua `createUserWithEmailAndPassword`, cập nhật displayName qua `updateProfile`, cache hồ sơ theo Firebase UID và gọi `sendEmailVerification`. Chỉ Firebase xác thực/mang mật khẩu; không thêm cột mật khẩu vào Room và không tự viết dữ liệu nghiệp vụ lên Firestore.
+- Tạo tài khoản thành công giữ phiên Firebase để dùng chức năng cá nhân, không ép xác minh mới được dùng offline. Màn hình kết quả hiển thị email, nút Tôi đã xác minh, Gửi lại email xác minh và Về trang chủ. Tài khoản chưa xác minh có thể mở lại màn hình này từ Cá nhân → Xác minh email.
+- Khi kiểm tra hoặc quay lại màn hình xác minh, SDK gọi `reload()` rồi `getIdToken(true)` trước khi cache trạng thái mới. Backend chia sẻ/lời mời về sau vẫn phải kiểm tra email đã xác minh từ token, không tin cờ cache.
+- Gửi lại email có thời gian chờ 60 giây theo UID trong tiến trình ứng dụng và tôn trọng lỗi hạn mức của Firebase. Không tạo lại tài khoản khi gửi email hoặc cập nhật họ tên thất bại; kết quả vẫn nói rõ tài khoản đã được tạo và hiển thị phần chưa thành công. Nếu cache hồ sơ thất bại sau tạo tài khoản, ứng dụng báo quay lại đăng nhập thay vì đăng ký lại.
+- Back/Tiếp tục offline trong lúc tạo hủy việc nhận kết quả/phiên của yêu cầu đó. Việc hủy không xóa tài khoản đã được Firebase tạo; không tự động chạy thao tác xóa tài khoản. Mật khẩu không được lưu trong ViewModel hoặc SavedState và được xóa khỏi biểu mẫu khi hoàn tất/rời màn hình.
+- Đăng ký không đổi UID của task khách, không nhập dữ liệu khách vào tài khoản và không kích hoạt đồng bộ. DB tài khoản vẫn là cache hồ sơ; bootstrap danh sách Cá nhân trên máy chủ và backend chia sẻ chưa triển khai.
+- Kiểm thử chỉ dùng gateway giả và SQLite native trên JVM, không tạo tài khoản/gửi email thật, không khởi tạo Activity hoặc emulator. Phần đăng ký bổ sung kiểm tra validation, email trùng, lỗi mạng, kết quả tạo một phần, gửi lại/cooldown, reload, hủy/đăng xuất và bảo toàn task khách. Thư viện Fragment kéo gián tiếp được ràng buộc tối thiểu 1.8.9 để tương thích Activity Result API.
+
+Kết quả sau bổ sung đăng ký: 55/55 test JVM vượt qua (35 test trước đó và 20 test đăng ký/xác minh mới), build APK thành công và lint không có lỗi; vẫn có cảnh báo lint. Chưa kiểm thử giao diện hoặc gửi email xác minh đến tài khoản thật.
+
+## Schema và dữ liệu khách
 
 `AppDatabase` version 2 dùng đầy đủ 10 Entity Kotlin theo `TodoList_DB_v2.dbml`; Room 2.8.4 sinh mã qua KSP2. DB khách vẫn có tên `guest-workspace.db` nhưng dùng cùng schema chuẩn, không còn bảng `guest_tasks` sau khi migration thành công. `GuestTaskRepository` xử lý dữ liệu trên luồng nền; trang chủ nhận projection `HomeTask`, không nhận Entity trực tiếp.
 
@@ -40,7 +67,7 @@ Hai partial index `uq_one_active_owner` và `uq_pending_invite` được cài tr
 - Công việc chưa đặt hạn hiển thị ở Hôm nay. 7 ngày tới gồm hôm nay đến hết ngày thứ sáu tiếp theo theo múi giờ thiết bị. Quá hạn so sánh thời điểm hạn với thời gian hiện tại, bao gồm việc trễ giờ ngay trong hôm nay.
 - Chức năng tài khoản/chia sẻ trực tuyến sau này tiếp tục dùng UID/UUID, phân quyền và giao thức trong docs. Đăng nhập chỉ là điều kiện cần; backend vẫn phải kiểm tra quyền và email xác minh khi nhận lời mời.
 
-Công việc con, lặp lại, alarm/thông báo hệ thống, quản lý danh mục tùy chỉnh, đăng ký tài khoản, backend chia sẻ và đồng bộ chưa thuộc lần triển khai hai màn hình này. Nút chuông hiện xem danh sách việc có hạn trên thiết bị, chưa lập lịch thông báo.
+Công việc con, lặp lại, alarm/thông báo hệ thống, quản lý danh mục tùy chỉnh, backend chia sẻ và đồng bộ chưa triển khai. Nút chuông hiện xem danh sách việc có hạn trên thiết bị, chưa lập lịch thông báo.
 
 ## Cây thư mục theo tài liệu
 

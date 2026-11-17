@@ -70,6 +70,11 @@ if (firebaseConfig.exists()) {
 }
 
 dependencies {
+    constraints {
+        implementation("androidx.fragment:fragment:1.8.9") {
+            because("Transitive Fragment 1.1.0 is incompatible with the Activity Result API used by registration.")
+        }
+    }
     coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.5")
     implementation("androidx.room:room-runtime:2.8.4")
     ksp("androidx.room:room-compiler:2.8.4")

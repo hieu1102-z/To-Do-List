@@ -20,6 +20,7 @@ import android.widget.*
 import com.finalexam.to_do_list.R
 import com.finalexam.to_do_list.controller.WorkspaceActivity
 import com.finalexam.to_do_list.controller.auth.LoginActivity
+import com.finalexam.to_do_list.controller.auth.RegisterActivity
 import com.finalexam.to_do_list.databinding.ActivityHomeBinding
 import com.finalexam.to_do_list.model.local.relation.HomeTask
 import com.finalexam.to_do_list.model.repository.AuthRepository
@@ -54,7 +55,7 @@ open class HomeActivity : WorkspaceActivity() {
         setContentView(binding.root)
         applyInsets(binding.root)
         repository = GuestTaskRepository.get(this)
-        auth = AuthRepository(this)
+        auth = AuthRepository.get(this)
         filter = TaskFilter.entries.getOrElse(savedInstanceState?.getInt("filter") ?: 0) { TaskFilter.TODAY }
         category = savedInstanceState?.getString("category")
         selectedDate = savedInstanceState?.getString("selectedDate")?.let(LocalDate::parse)
@@ -79,7 +80,13 @@ open class HomeActivity : WorkspaceActivity() {
         render()
     }
 
-    override fun onResume() { super.onResume(); if (::repository.isInitialized) reload() }
+    override fun onResume() {
+        super.onResume()
+        if (::repository.isInitialized) {
+            auth.refreshProfile()
+            reload()
+        }
+    }
     override fun onSaveInstanceState(outState: Bundle) {
         outState.putInt("filter", filter.ordinal)
         outState.putString("category", category)
@@ -227,13 +234,24 @@ open class HomeActivity : WorkspaceActivity() {
 
     private fun accountMenu() {
         val signedIn = auth.user != null
-        AlertDialog.Builder(this).setTitle(if (signedIn) auth.user?.email else "Bạn đang dùng chế độ khách")
+        val dialog = AlertDialog.Builder(this).setTitle(if (signedIn) auth.user?.email else "Bạn đang dùng chế độ khách")
             .setMessage("Công việc trong không gian offline được lưu trên thiết bị. Đăng nhập không tự tải dữ liệu này lên mạng.")
             .setPositiveButton(if (signedIn) "Đăng xuất" else "Đăng nhập") { _, _ ->
                 if (signedIn) { auth.signOut(); render(); toast("Đã đăng xuất. Công việc offline vẫn được giữ.") }
                 else startActivity(Intent(this, LoginActivity::class.java))
             }.setNeutralButton("Chia sẻ danh sách") { _, _ -> requireSharingAccount() }
-            .setNegativeButton("Đóng", null).show()
+            .setNegativeButton("Đóng", null)
+        if (signedIn && auth.user?.emailVerified == false) {
+            dialog.setView(Button(this).apply {
+                setText(R.string.verify_email_title)
+                isAllCaps = false
+                setOnClickListener {
+                    startActivity(Intent(this@HomeActivity, RegisterActivity::class.java)
+                        .putExtra(RegisterActivity.EXTRA_VERIFY_ONLY, true))
+                }
+            })
+        }
+        dialog.show()
     }
 
     private fun requireSharingAccount() {

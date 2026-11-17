@@ -1,3 +1,35 @@
 <resources>
     <string name="app_name">To-Do-List</string>
+    <string name="login_success">Đăng nhập thành công</string>
+    <string name="back">Quay lại</string>
+    <string name="register_title">Tạo tài khoản</string>
+    <string name="register_subtitle">Bắt đầu một ngày có kế hoạch hơn.</string>
+    <string name="register_action">Đăng ký</string>
+    <string name="register_loading">Đang tạo tài khoản…</string>
+    <string name="login_to_register">Chưa có tài khoản? Đăng ký</string>
+    <string name="register_to_login">Đã có tài khoản? Đăng nhập</string>
+    <string name="full_name">Họ và tên</string>
+    <string name="full_name_hint">Nhập họ và tên</string>
+    <string name="email_label">Email</string>
+    <string name="email_hint">ban@email.com</string>
+    <string name="password_label">Mật khẩu</string>
+    <string name="register_password_hint">Ít nhất 6 ký tự</string>
+    <string name="confirm_password">Xác nhận mật khẩu</string>
+    <string name="confirm_password_hint">Nhập lại mật khẩu</string>
+    <string name="password_show">Hiện mật khẩu</string>
+    <string name="password_hide">Ẩn mật khẩu</string>
+    <string name="continue_offline">Tiếp tục dùng offline</string>
+    <string name="register_created">Tài khoản đã được tạo</string>
+    <string name="verify_email_title">Xác minh email</string>
+    <string name="email_verified">Email đã được xác minh</string>
+    <string name="verification_instructions">Kiểm tra hộp thư %1$s và mở liên kết xác minh. Bạn vẫn có thể dùng chức năng offline khi chưa xác minh email.</string>
+    <string name="verification_complete">Email %1$s đã được xác minh. Bạn có thể tiếp tục dùng ứng dụng.</string>
+    <string name="verification_sent">Đã gửi email xác minh. Hãy kiểm tra cả mục thư rác.</string>
+    <string name="verification_not_sent">Chưa gửi được email xác minh. Tài khoản vẫn đã được tạo; bạn có thể thử gửi lại.</string>
+    <string name="verification_pending">Email chưa được xác minh. Hãy mở liên kết trong email rồi kiểm tra lại.</string>
+    <string name="register_profile_warning">Tài khoản đã được tạo, nhưng chưa cập nhật được họ tên trên Firebase.</string>
+    <string name="verification_check">Tôi đã xác minh</string>
+    <string name="verification_resend">Gửi lại email xác minh</string>
+    <string name="verification_wait">Gửi lại sau %1$d giây</string>
+    <string name="go_home">Về trang chủ</string>
 </resources>

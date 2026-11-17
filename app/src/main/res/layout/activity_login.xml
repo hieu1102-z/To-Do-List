@@ -22,5 +22,7 @@
         </LinearLayout>
         <Button android:id="@+id/continueOffline" style="@style/PrimaryButton" android:background="@drawable/bg_input" android:textColor="@color/ink" android:text="Tiếp tục dùng offline"/>
         <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="16dp" android:gravity="center" android:text="Không cần tài khoản để quản lý công việc cá nhân trên thiết bị này." android:textSize="12sp" android:textColor="@color/muted"/>
+        <Button android:id="@+id/register" android:layout_width="match_parent" android:layout_height="48dp" android:layout_marginTop="12dp"
+            android:background="?android:attr/selectableItemBackground" android:text="@string/login_to_register" android:textAllCaps="false" android:textColor="@color/brand"/>
     </LinearLayout>
 </ScrollView>

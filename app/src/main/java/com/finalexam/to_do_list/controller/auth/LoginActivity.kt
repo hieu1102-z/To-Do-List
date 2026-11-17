@@ -1,6 +1,7 @@
 package com.finalexam.to_do_list.controller.auth
 
 import android.app.AlertDialog
+import android.content.Intent
 import android.os.Bundle
 import android.text.InputType
 import android.text.method.HideReturnsTransformationMethod
@@ -9,28 +10,47 @@ import android.util.Patterns
 import android.view.View
 import android.view.inputmethod.EditorInfo
 import android.widget.EditText
+import android.widget.Toast
+import androidx.activity.addCallback
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.ViewModelProvider
+import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.repeatOnLifecycle
 import com.finalexam.to_do_list.R
 import com.finalexam.to_do_list.controller.WorkspaceActivity
 import com.finalexam.to_do_list.databinding.ActivityLoginBinding
 import com.finalexam.to_do_list.model.repository.AuthRepository
-import com.google.firebase.FirebaseNetworkException
-import com.google.firebase.FirebaseTooManyRequestsException
-import com.google.firebase.auth.FirebaseAuthException
+import com.finalexam.to_do_list.model.repository.AuthFailure
+import kotlinx.coroutines.launch
 
 class LoginActivity : WorkspaceActivity() {
     private lateinit var binding: ActivityLoginBinding
     private lateinit var auth: AuthRepository
+    private lateinit var viewModel: LoginViewModel
     private var visiblePassword = false
     private var busy = false
+    private val registration = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+        if (result.resultCode == RESULT_OK) { setResult(RESULT_OK); finish() }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         binding = ActivityLoginBinding.inflate(layoutInflater)
         setContentView(binding.root)
         applyInsets(binding.root)
-        auth = AuthRepository(this)
-        binding.back.setOnClickListener { finish() }
-        binding.continueOffline.setOnClickListener { finish() }
+        auth = AuthRepository.get(this)
+        viewModel = ViewModelProvider(this, object : ViewModelProvider.Factory {
+            @Suppress("UNCHECKED_CAST")
+            override fun <T : ViewModel> create(modelClass: Class<T>): T {
+                require(modelClass.isAssignableFrom(LoginViewModel::class.java))
+                return LoginViewModel(auth) as T
+            }
+        })[LoginViewModel::class.java]
+        binding.back.setOnClickListener { leave() }
+        binding.continueOffline.setOnClickListener { leave() }
+        onBackPressedDispatcher.addCallback(this) { leave() }
         binding.togglePassword.setOnClickListener {
             visiblePassword = !visiblePassword
             binding.password.transformationMethod = if (visiblePassword) HideReturnsTransformationMethod.getInstance() else PasswordTransformationMethod.getInstance()
@@ -43,8 +63,32 @@ class LoginActivity : WorkspaceActivity() {
             if (action == EditorInfo.IME_ACTION_DONE) { submit(); true } else false
         }
         binding.forgotPassword.setOnClickListener { resetPassword() }
+        binding.register.setOnClickListener {
+            if (viewModel.state.value != LoginState.Loading)
+                registration.launch(Intent(this, RegisterActivity::class.java))
+        }
+        lifecycleScope.launch {
+            repeatOnLifecycle(Lifecycle.State.STARTED) {
+                viewModel.state.collect { state ->
+                    setBusy(state == LoginState.Loading)
+                    when (state) {
+                        LoginState.Success -> {
+                            binding.password.text.clear()
+                            Toast.makeText(this@LoginActivity, R.string.login_success, Toast.LENGTH_SHORT).show()
+                            setResult(RESULT_OK)
+                            finish()
+                        }
+                        is LoginState.Error -> showError(message(state.failure))
+                        LoginState.Loading -> binding.error.visibility = View.GONE
+                        LoginState.Idle -> Unit
+                    }
+                }
+            }
+        }
         if (!auth.configured) showError("Đăng nhập chưa sẵn sàng. Bạn vẫn có thể tiếp tục dùng offline.")
     }
+
+    private fun leave() { viewModel.leave(); binding.password.text.clear(); finish() }
 
     private fun submit() {
         if (busy) return
@@ -56,29 +100,21 @@ class LoginActivity : WorkspaceActivity() {
             binding.email.requestFocus()
             return
         }
-        if (password.isBlank()) {
+        if (password.isEmpty()) {
             binding.password.error = "Vui lòng nhập mật khẩu"
             binding.password.requestFocus()
             return
         }
-        setBusy(true)
-        auth.signIn(email, password) { result ->
-            if (isFinishing || isDestroyed) return@signIn
-            setBusy(false)
-            result.fold({
-                binding.password.text.clear()
-                setResult(RESULT_OK)
-                finish()
-            }, { showError(message(it)) })
-        }
+        viewModel.submit(email, password)
     }
 
     private fun setBusy(value: Boolean) {
         busy = value
-        binding.signIn.isEnabled = !value
+        binding.signIn.isEnabled = !value && auth.configured
         binding.email.isEnabled = !value
         binding.password.isEnabled = !value
-        binding.forgotPassword.isEnabled = !value
+        binding.forgotPassword.isEnabled = !value && auth.configured
+        binding.register.isEnabled = !value
         binding.loading.visibility = if (value) View.VISIBLE else View.GONE
         binding.signIn.text = if (value) "Đang đăng nhập…" else "Đăng nhập"
     }
@@ -109,15 +145,5 @@ class LoginActivity : WorkspaceActivity() {
     }
 
     private fun showError(text: String) { binding.error.text = text; binding.error.visibility = View.VISIBLE }
-    private fun message(error: Throwable): String = when (error) {
-        is FirebaseNetworkException -> "Không có kết nối mạng. Hãy kiểm tra mạng hoặc tiếp tục dùng offline."
-        is FirebaseTooManyRequestsException -> "Có quá nhiều yêu cầu. Vui lòng thử lại sau."
-        is FirebaseAuthException -> when (error.errorCode) {
-            "ERROR_USER_DISABLED" -> "Tài khoản đã bị vô hiệu hóa."
-            "ERROR_INVALID_EMAIL" -> "Địa chỉ email không hợp lệ."
-            "ERROR_OPERATION_NOT_ALLOWED" -> "Đăng nhập email chưa được bật. Vui lòng liên hệ quản trị viên."
-            else -> "Email hoặc mật khẩu không chính xác."
-        }
-        else -> "Đăng nhập chưa sẵn sàng. Bạn vẫn có thể dùng offline."
-    }
+    private fun message(error: Throwable): String = (error as? AuthFailure)?.message ?: AuthFailure.UNKNOWN.message!!
 }
