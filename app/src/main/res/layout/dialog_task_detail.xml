@@ -1,0 +1,65 @@
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent" android:layout_height="wrap_content"
+    android:orientation="vertical" android:background="@drawable/bg_task_detail">
+    <LinearLayout android:layout_width="match_parent" android:layout_height="60dp"
+        android:paddingStart="9dp" android:paddingEnd="12dp" android:gravity="center_vertical">
+        <ImageButton android:id="@+id/close" android:layout_width="44dp" android:layout_height="48dp"
+            android:paddingHorizontal="11dp" android:paddingVertical="13dp" android:src="@drawable/ic_detail_back"
+            android:background="?android:attr/selectableItemBackgroundBorderless" android:contentDescription="@string/task_detail_close"/>
+        <TextView android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content"
+            android:text="@string/task_detail_heading" android:textColor="@color/ink" android:textSize="20sp" android:textStyle="bold"/>
+        <TextView android:id="@+id/edit" style="@style/TaskDetailAction" android:text="@string/task_detail_edit" android:textColor="@color/editor_brand"/>
+        <TextView android:id="@+id/delete" style="@style/TaskDetailAction" android:text="@string/task_detail_delete" android:textColor="#BA4B56"/>
+    </LinearLayout>
+    <ScrollView android:id="@+id/content" android:layout_width="match_parent" android:layout_height="wrap_content">
+        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:orientation="vertical" android:paddingHorizontal="20dp" android:paddingTop="12dp" android:paddingBottom="16dp">
+            <com.finalexam.to_do_list.view.ChipFlowLayout android:id="@+id/badges"
+                android:layout_width="match_parent" android:layout_height="wrap_content"/>
+            <TextView android:id="@+id/taskTitle" android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:layout_marginTop="16dp" android:textSize="23sp" android:textStyle="bold" android:textColor="@color/ink"
+                android:letterSpacing="-0.02" android:breakStrategy="simple"/>
+            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:layout_marginTop="16dp" android:orientation="vertical" android:padding="14dp" android:background="@drawable/bg_task_info">
+                <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:gravity="center_vertical">
+                    <ImageView style="@style/TaskDetailIcon" android:src="@drawable/ic_detail_calendar"/>
+                    <TextView style="@style/TaskDetailKey" android:text="@string/task_detail_due"/>
+                    <TextView android:id="@+id/due" style="@style/TaskDetailValue"/>
+                </LinearLayout>
+                <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:gravity="center_vertical" android:layout_marginTop="16dp">
+                    <ImageView style="@style/TaskDetailIcon" android:src="@drawable/ic_detail_bell"/>
+                    <TextView style="@style/TaskDetailKey" android:text="@string/task_editor_reminder"/>
+                    <TextView android:id="@+id/reminder" style="@style/TaskDetailValue"/>
+                </LinearLayout>
+                <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:gravity="center_vertical" android:layout_marginTop="16dp">
+                    <ImageView style="@style/TaskDetailIcon" android:src="@drawable/ic_detail_folder"/>
+                    <TextView style="@style/TaskDetailKey" android:text="@string/task_editor_category"/>
+                    <TextView android:id="@+id/category" style="@style/TaskDetailValue"/>
+                </LinearLayout>
+                <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:gravity="center_vertical" android:layout_marginTop="16dp">
+                    <ImageView style="@style/TaskDetailIcon" android:src="@drawable/ic_detail_person"/>
+                    <TextView style="@style/TaskDetailKey" android:text="@string/task_detail_participant"/>
+                    <TextView android:id="@+id/participant" style="@style/TaskDetailValue"/>
+                </LinearLayout>
+            </LinearLayout>
+            <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="16dp"
+                android:text="@string/task_editor_description" android:textColor="@color/ink" android:textSize="15sp" android:textStyle="bold"/>
+            <TextView android:id="@+id/description" android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:layout_marginTop="8dp" android:textSize="13sp" android:textColor="#5B6270" android:lineSpacingMultiplier="1.6"/>
+            <TextView android:id="@+id/error" android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:layout_marginTop="12dp" android:text="@string/task_detail_error" android:textColor="#BA4B56"
+                android:textSize="13sp" android:visibility="gone" android:accessibilityLiveRegion="polite"/>
+        </LinearLayout>
+    </ScrollView>
+    <FrameLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+        android:paddingHorizontal="20dp" android:paddingTop="12dp" android:paddingBottom="16dp">
+        <LinearLayout android:id="@+id/complete" android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:minHeight="50dp" android:padding="10dp" android:gravity="center"
+            android:background="@drawable/bg_primary" android:backgroundTint="@color/editor_brand" android:clickable="true" android:focusable="true">
+            <ImageView android:layout_width="20dp" android:layout_height="20dp" android:src="@drawable/ic_detail_check" android:importantForAccessibility="no"/>
+            <TextView android:id="@+id/completeLabel" android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:layout_marginStart="10dp" android:text="@string/task_detail_complete" android:textSize="14sp"
+                android:fontFamily="sans-serif-medium" android:textColor="@android:color/white" android:importantForAccessibility="no"/>
+        </LinearLayout>
+    </FrameLayout>
+</LinearLayout>

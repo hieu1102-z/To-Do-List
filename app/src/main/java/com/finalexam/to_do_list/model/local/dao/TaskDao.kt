@@ -12,9 +12,15 @@ interface TaskDao {
 
     @Query("""SELECT t.id,t.title,COALESCE(t.description,'') AS description,
         t.category_id AS categoryId,c.name AS category,t.due_at AS dueAt,t.priority,t.is_done AS done,
-        t.completed_at AS completedAt,t.created_at AS createdAt,t.client_updated_at AS updatedAt
+        t.completed_at AS completedAt,t.created_at AS createdAt,t.client_updated_at AS updatedAt,
+        t.repeat_type AS repeatType,r.remind_at AS remindAt,r.is_enabled AS reminderEnabled,
+        (SELECT GROUP_CONCAT(CASE WHEN u.full_name='' THEN u.email ELSE u.full_name END, ', ')
+         FROM task_participants p JOIN users u ON u.uid=p.user_uid
+         JOIN category_members pm ON pm.category_id=p.category_id AND pm.user_uid=p.user_uid
+         WHERE p.task_id=t.id AND pm.status='ACTIVE') AS participantNames
         FROM tasks t JOIN categories c ON c.id=t.category_id
         JOIN category_members m ON m.category_id=t.category_id
+        LEFT JOIN task_reminders r ON r.task_id=t.id AND r.user_uid=:uid
         WHERE m.user_uid=:uid AND m.status='ACTIVE'
         ORDER BY t.is_done,t.due_at IS NULL,t.due_at,t.created_at DESC""")
     fun homeTasks(uid: String): List<HomeTask>
@@ -48,6 +54,9 @@ interface TaskDao {
     WHERE user_uid = :userUid
     """)
     fun getAllReminders(userUid: String): List<TaskReminderEntity>
+
+    @Query("SELECT * FROM task_reminders WHERE task_id=:taskId AND user_uid=:userUid")
+    fun findReminder(taskId: String, userUid: String): TaskReminderEntity?
 
     @Query("""
     UPDATE task_reminders

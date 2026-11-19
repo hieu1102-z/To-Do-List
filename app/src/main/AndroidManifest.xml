@@ -26,6 +26,8 @@
             android:windowSoftInputMode="adjustResize" />
         <activity android:name=".controller.home.HomeActivity" android:exported="false"
             android:windowSoftInputMode="adjustResize" />
+        <activity android:name=".controller.home.AddTaskActivity" android:exported="false"
+            android:windowSoftInputMode="adjustResize" />
         <activity android:name=".controller.WorkspaceActivity" android:exported="false"
             android:windowSoftInputMode="adjustResize" />
         <activity

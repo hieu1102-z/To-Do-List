@@ -221,7 +221,7 @@ open class HomeActivity : WorkspaceActivity() {
             orientation = LinearLayout.HORIZONTAL; gravity = Gravity.TOP
             setPadding(dp(8), dp(10), dp(14), dp(10)); background = rounded(Color.WHITE, 16, Color.rgb(232, 234, 240))
             isClickable = true; isFocusable = true
-            setOnClickListener { editTask(task) }
+            setOnClickListener { showTaskDetail(task) }
             setOnLongClickListener { confirmDelete(task); true }
         }
         val check = CheckBox(this).apply {
@@ -286,7 +286,7 @@ open class HomeActivity : WorkspaceActivity() {
     }
 
     private fun selectCategory() {
-        val categories = arrayOf("Tất cả danh mục", "Cá nhân", "Học tập", "Công việc", "Mua sắm")
+        val categories = arrayOf("Tất cả danh mục", "to do", "Cá nhân", "Học tập", "Công việc", "Mua sắm")
         AlertDialog.Builder(this).setTitle("Danh mục trên thiết bị")
             .setSingleChoiceItems(categories, categories.indexOf(category ?: categories[0])) { dialog, which ->
                 category = if (which == 0) null else categories[which]; selectedNavigation = 2; render(); dialog.dismiss()
@@ -329,65 +329,27 @@ open class HomeActivity : WorkspaceActivity() {
         }
     }
 
-    private fun editTask(task: HomeTask?) {
-        val form = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(24), dp(8), dp(24), dp(8)) }
-        fun input(hintText: String, value: String, multiline: Boolean = false) = EditText(this).apply {
-            hint = hintText; setText(value); textSize = 14f; setTextColor(ink)
-            inputType = InputType.TYPE_CLASS_TEXT or if (multiline) InputType.TYPE_TEXT_FLAG_MULTI_LINE else InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
-            maxLines = if (multiline) 3 else 1
-            form.addView(this, LinearLayout.LayoutParams(-1, -2))
-        }
-        val title = input("Tiêu đề *", task?.title ?: "").apply { filters = arrayOf(InputFilter.LengthFilter(200)) }
-        val description = input("Mô tả", task?.description ?: "", true)
-        form.addView(label("Danh mục", 12f, muted).apply { setPadding(0, dp(12), 0, dp(4)) })
-        val categories = listOf("Cá nhân", "Học tập", "Công việc", "Mua sắm")
-        val categoryInput = Spinner(this).apply {
-            adapter = ArrayAdapter(this@HomeActivity, android.R.layout.simple_spinner_dropdown_item, categories)
-            setSelection(categories.indexOf(task?.category ?: category ?: "Cá nhân").coerceAtLeast(0))
-        }
-        form.addView(categoryInput, LinearLayout.LayoutParams(-1, dp(48)))
-        form.addView(label("Ưu tiên", 12f, muted).apply { setPadding(0, dp(12), 0, dp(4)) })
-        val priority = Spinner(this).apply {
-            adapter = ArrayAdapter(this@HomeActivity, android.R.layout.simple_spinner_dropdown_item, listOf("Thấp", "Trung bình", "Cao"))
-            setSelection((task?.priority ?: 2) - 1)
-        }
-        form.addView(priority, LinearLayout.LayoutParams(-1, dp(48)))
-        var dueAt = task?.dueAt
-        val dateButton = Button(this).apply { isAllCaps = false; text = dueAt?.let { Instant.ofEpochMilli(it).atZone(zone).format(DateTimeFormatter.ofPattern("dd/MM/yyyy HH:mm")) } ?: "Chọn thời gian nhắc nhở" }
-        dateButton.setOnClickListener {
-            val calendar = Calendar.getInstance().apply { dueAt?.let { timeInMillis = it } }
-            DatePickerDialog(this, { _, year, month, day ->
-                TimePickerDialog(this, { _, hour, minute ->
-                    calendar.set(year, month, day, hour, minute, 0); calendar.set(Calendar.MILLISECOND, 0)
-                    dueAt = calendar.timeInMillis
-                    dateButton.text = Instant.ofEpochMilli(dueAt!!).atZone(zone).format(DateTimeFormatter.ofPattern("dd/MM/yyyy HH:mm"))
-                }, calendar.get(Calendar.HOUR_OF_DAY), calendar.get(Calendar.MINUTE), true).show()
-            }, calendar.get(Calendar.YEAR), calendar.get(Calendar.MONTH), calendar.get(Calendar.DAY_OF_MONTH)).show()
-        }
-        form.addView(dateButton, LinearLayout.LayoutParams(-1, dp(48)))
-        form.addView(Button(this).apply { text = "Bỏ thời gian nhắc nhở"; isAllCaps = false; setOnClickListener { dueAt = null; dateButton.text = "Chọn hạn hoàn thành" } }, LinearLayout.LayoutParams(-1, dp(48)))
-        val scroll = ScrollView(this).apply { addView(form) }
-        val builder = AlertDialog.Builder(this).setTitle(if (task == null) "Thêm công việc" else "Sửa công việc")
-            .setView(scroll).setPositiveButton("Lưu", null).setNegativeButton("Hủy", null)
-        if (task != null) builder.setNeutralButton("Xóa") { _, _ -> confirmDelete(task) }
-        val dialog = builder.create()
-        dialog.setOnShowListener {
-            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
-                if (title.text.toString().trim().isEmpty()) { title.error = "Vui lòng nhập tiêu đề"; return@setOnClickListener }
-                dialog.getButton(AlertDialog.BUTTON_POSITIVE).isEnabled = false
-                repository.save(task?.id, title.text.toString(), description.text.toString(), categories[categoryInput.selectedItemPosition], priority.selectedItemPosition + 1, dueAt) { result ->
-                    if (isFinishing || isDestroyed) return@save
-                    if (result.isSuccess) { dialog.dismiss(); reload() }
-                    else { dialog.getButton(AlertDialog.BUTTON_POSITIVE).isEnabled = true; toast("Không thể lưu công việc. Vui lòng thử lại.") }
-                }
-            }
-        }
-        dialog.show()
+    private fun showTaskDetail(task: HomeTask) {
+        TaskDetailDialog.show(this, task, repository,
+            onEdit = { editTask(task) },
+            onDelete = { dialog -> confirmDelete(task) { dialog.dismiss() } },
+            onChanged = { reload() })
     }
 
-    private fun confirmDelete(task: HomeTask) {
-        AlertDialog.Builder(this).setTitle("Xóa công việc?").setMessage("“${task.title}” sẽ bị xóa khỏi thiết bị.")
-            .setNegativeButton("Hủy", null).setPositiveButton("Xóa") { _, _ -> repository.delete(task.id) { changed(it) } }.show()
+    private fun editTask(task: HomeTask?) {
+        if (task == null) {
+            startActivity(Intent(this, AddTaskActivity::class.java))
+            return
+        }
+        EditTaskDialog.show(this, task, repository,
+            onDelete = { dialog -> confirmDelete(task) { dialog.dismiss() } },
+            onSaved = { reload() })
+    }
+    private fun confirmDelete(task: HomeTask, onDeleted: () -> Unit = {}) {
+        DeleteTaskDialog.show(this, task, repository) {
+            onDeleted()
+            reload()
+        }
     }
 
     private fun changed(result: Result<Unit>) {
@@ -525,7 +487,7 @@ open class HomeActivity : WorkspaceActivity() {
                 background = rounded(white, 20, border)
                 isClickable = true
                 isFocusable = true
-                setOnClickListener { editTask(task) }
+                setOnClickListener { showTaskDetail(task) }
             }
 
             // Nút hoàn thành hình tròn

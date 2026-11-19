@@ -1,0 +1,66 @@
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/root" android:layout_width="match_parent" android:layout_height="match_parent"
+    android:orientation="vertical" android:background="@color/surface">
+    <LinearLayout android:layout_width="match_parent" android:layout_height="60dp"
+        android:paddingHorizontal="20dp" android:gravity="center_vertical">
+        <ImageButton android:id="@+id/close" android:layout_width="44dp" android:layout_height="48dp"
+            android:paddingStart="0dp" android:paddingEnd="22dp" android:paddingVertical="13dp"
+            android:background="?android:attr/selectableItemBackgroundBorderless"
+            android:src="@drawable/ic_editor_close" android:contentDescription="@string/task_editor_close"/>
+        <TextView android:id="@+id/heading" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content"
+            android:text="@string/task_editor_heading" android:textSize="20sp" android:textStyle="bold"
+            android:textColor="@color/ink" android:includeFontPadding="false"/>
+    </LinearLayout>
+    <ScrollView android:id="@+id/content" android:layout_width="match_parent" android:layout_height="0dp" android:layout_weight="1"
+        android:fillViewport="true" android:clipToPadding="false">
+        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:paddingHorizontal="20dp" android:paddingTop="12dp" android:paddingBottom="16dp"
+            android:orientation="vertical">
+            <TextView style="@style/TaskEditorLabel" android:labelFor="@id/taskTitle" android:text="@string/task_editor_title"/>
+            <EditText android:id="@+id/taskTitle" style="@style/TaskEditorInput"
+                android:inputType="textCapSentences" android:maxLength="200" android:imeOptions="actionNext"
+                android:hint="@string/task_editor_title_hint" android:layout_marginBottom="10dp"/>
+            <TextView style="@style/TaskEditorLabel" android:labelFor="@id/description" android:text="@string/task_editor_description"/>
+            <EditText android:id="@+id/description" style="@style/TaskEditorInput"
+                android:layout_height="58dp" android:singleLine="false" android:gravity="top|start"
+                android:paddingTop="12dp" android:paddingBottom="12dp" android:inputType="textMultiLine|textCapSentences"
+                android:hint="@string/task_editor_description_hint" android:layout_marginBottom="10dp"/>
+            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:baselineAligned="false"
+                android:layout_marginBottom="10dp">
+                <LinearLayout android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content"
+                    android:orientation="vertical" android:layout_marginEnd="12dp">
+                    <TextView style="@style/TaskEditorLabel" android:labelFor="@id/due" android:text="@string/task_editor_due"/>
+                    <TextView android:id="@+id/due" style="@style/TaskEditorInput" android:clickable="true"
+                        android:focusable="true" android:ellipsize="end"/>
+                </LinearLayout>
+                <LinearLayout android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content"
+                    android:orientation="vertical">
+                    <TextView style="@style/TaskEditorLabel" android:labelFor="@id/reminder" android:text="@string/task_editor_reminder"/>
+                    <TextView android:id="@+id/reminder" style="@style/TaskEditorInput" android:clickable="true"
+                        android:focusable="true" android:drawableEnd="@drawable/ic_editor_bell" android:drawablePadding="8dp"
+                        android:ellipsize="end"/>
+                </LinearLayout>
+            </LinearLayout>
+            <TextView style="@style/TaskEditorLabel" android:text="@string/task_editor_priority"/>
+            <com.finalexam.to_do_list.view.ChipFlowLayout android:id="@+id/priorities"
+                android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginBottom="10dp"/>
+            <TextView style="@style/TaskEditorLabel" android:labelFor="@id/categories" android:text="@string/task_editor_category"/>
+            <Spinner android:id="@+id/categories" android:layout_width="match_parent" android:layout_height="48dp"
+                android:spinnerMode="dropdown" android:background="@drawable/bg_task_dropdown"
+                android:popupBackground="@android:color/white" android:layout_marginBottom="10dp"/>
+            <TextView style="@style/TaskEditorLabel" android:labelFor="@id/repeats" android:text="@string/task_editor_repeat"/>
+            <Spinner android:id="@+id/repeats" android:layout_width="match_parent" android:layout_height="48dp"
+                android:spinnerMode="dropdown" android:background="@drawable/bg_task_dropdown"
+                android:popupBackground="@android:color/white" android:saveEnabled="false"/>
+            <TextView android:id="@+id/error" android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:layout_marginTop="12dp" android:textColor="#BA4B56" android:textSize="13sp"
+                android:accessibilityLiveRegion="polite" android:visibility="gone"/>
+        </LinearLayout>
+    </ScrollView>
+    <FrameLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+        android:paddingHorizontal="20dp" android:paddingTop="12dp" android:paddingBottom="8dp">
+        <Button android:id="@+id/save" style="@style/PrimaryButton" android:layout_height="50dp"
+            android:fontFamily="sans-serif-medium" android:backgroundTint="@color/editor_brand"
+            android:text="@string/task_editor_save"/>
+    </FrameLayout>
+</LinearLayout>

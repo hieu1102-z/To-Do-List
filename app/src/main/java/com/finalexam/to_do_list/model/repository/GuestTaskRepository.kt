@@ -14,6 +14,7 @@ import java.util.concurrent.Executors
 import com.finalexam.to_do_list.model.local.entity.TaskReminderEntity
 import com.finalexam.to_do_list.notification.TaskReminderScheduler
 import com.finalexam.to_do_list.notification.NotificationPreferences
+import com.finalexam.to_do_list.util.TaskDefaults
 
 /** Serial database operations off the UI thread. No network dependency. */
 class GuestTaskRepository internal constructor(
@@ -34,20 +35,45 @@ class GuestTaskRepository internal constructor(
         priority: Int,
         dueAt: Long?,
         callback: (Result<Unit>) -> Unit
+    ) = saveTask(id, title, description, category, priority, dueAt, 0L, true, callback)
+
+    fun create(
+        title: String, description: String, category: String, priority: Int,
+        dueAt: Long?, reminderMinutes: Long?, callback: (Result<Unit>) -> Unit
+    ) = saveTask(null, title, description, category, priority, dueAt, reminderMinutes, false, callback)
+
+    fun updateWithReminder(
+        id: String, title: String, description: String, category: String, priority: Int,
+        dueAt: Long?, reminderMinutes: Long?, callback: (Result<Unit>) -> Unit
+    ) = saveTask(id, title, description, category, priority, dueAt, reminderMinutes, false, callback)
+
+    private fun saveTask(
+        id: String?, title: String, description: String, category: String, priority: Int,
+        dueAt: Long?, reminderMinutes: Long?, preserveReminder: Boolean, callback: (Result<Unit>) -> Unit
     ) = execute({
+        require(reminderMinutes == null || reminderMinutes in listOf(0L, 5L, 15L, 30L, 60L, 1440L))
         require(title.trim().length in 1..200) {
             "Tiêu đề cần từ 1 đến 200 ký tự."
         }
         require(priority in 1..3)
-        require(category in listOf("Cá nhân", "Học tập", "Công việc", "Mua sắm"))
+        require(category in TaskDefaults.categories)
 
         val uid = dao.guestUid()
+        val previous = id?.let { dao.find(it) }
+        val previousReminder = id?.let { dao.findReminder(it, uid) }
+        val offsetMillis = if (preserveReminder && previous != null) {
+            previousReminder?.let { (previous.dueAt ?: it.remindAt) - it.remindAt }
+        } else reminderMinutes?.times(60_000L)
 
         check(uid.startsWith("local:")) {
             "This repository is only for the local workspace."
         }
 
         val savedTask = transaction {
+            // DBML requires category_id. Lazily create the unclassified workspace bucket.
+            if (category == TaskDefaults.UNCATEGORIZED) {
+                GuestBootstrap.ensureCategory(database.openHelper.writableDatabase, uid, category, System.currentTimeMillis())
+            }
             val categoryId = requireNotNull(
                 dao.categoryId(uid, GuestBootstrap.nameKey(category))
             )
@@ -89,55 +115,27 @@ class GuestTaskRepository internal constructor(
                 dao.update(task)
             }
 
+            val remindAt = task.dueAt?.let { due -> offsetMillis?.let { due - it } }
+            if (remindAt != null && remindAt > now) {
+                dao.saveReminder(TaskReminderEntity(
+                    taskId = task.id, userUid = uid, remindAt = remindAt,
+                    isEnabled = !task.isDone && NotificationPreferences.isEnabled(appContext),
+                    clientUpdatedAt = now
+                ))
+            } else {
+                dao.deleteReminder(task.id, uid)
+            }
+
             task
         }
 
-        // Cập nhật lịch nhắc nhở sau khi lưu công việc
-        val now = System.currentTimeMillis()
-
-        if (savedTask.dueAt != null && savedTask.dueAt > now) {
-
-            val notificationsEnabled =
-                NotificationPreferences.isEnabled(appContext)
-
-            val reminder = TaskReminderEntity(
-                taskId = savedTask.id,
-                userUid = uid,
-                remindAt = savedTask.dueAt,
-                isEnabled = notificationsEnabled,
-                clientUpdatedAt = now
-            )
-
-            transaction {
-                dao.saveReminder(reminder)
-            }
-
-            if (notificationsEnabled) {
-                TaskReminderScheduler.schedule(
-                    appContext,
-                    savedTask.id,
-                    savedTask.title,
-                    savedTask.dueAt
-                )
-            } else {
-                TaskReminderScheduler.cancel(
-                    appContext,
-                    savedTask.id,
-                    savedTask.title
-                )
-            }
-
+        // The task and reminder commit together; scheduling follows the stored preference.
+        val reminder = dao.findReminder(savedTask.id, uid)
+        if (reminder?.isEnabled == true) {
+            TaskReminderScheduler.cancel(appContext, savedTask.id, savedTask.title)
+            TaskReminderScheduler.schedule(appContext, savedTask.id, savedTask.title, reminder.remindAt)
         } else {
-
-            transaction {
-                dao.deleteReminder(savedTask.id, uid)
-            }
-
-            TaskReminderScheduler.cancel(
-                appContext,
-                savedTask.id,
-                savedTask.title
-            )
+            TaskReminderScheduler.cancel(appContext, savedTask.id, savedTask.title)
         }
 
     }, callback)
@@ -166,50 +164,23 @@ class GuestTaskRepository internal constructor(
 
             dao.update(updated)
 
-            if (!newIsDone &&
-                notificationsEnabled &&
-                updated.dueAt != null &&
-                updated.dueAt > now
-            ) {
-                dao.saveReminder(
-                    TaskReminderEntity(
-                        taskId = updated.id,
-                        userUid = uid,
-                        remindAt = updated.dueAt,
-                        isEnabled = true,
-                        clientUpdatedAt = now
-                    )
-                )
-            } else if (!newIsDone &&
-                updated.dueAt != null &&
-                updated.dueAt > now
-            ) {
-                dao.saveReminder(
-                    TaskReminderEntity(
-                        taskId = updated.id,
-                        userUid = uid,
-                        remindAt = updated.dueAt,
-                        isEnabled = false,
-                        clientUpdatedAt = now
-                    )
-                )
-            } else {
-                dao.deleteReminder(updated.id, uid)
+            dao.findReminder(id, uid)?.let { reminder ->
+                dao.saveReminder(reminder.copy(
+                    isEnabled = !newIsDone && notificationsEnabled && reminder.remindAt > now,
+                    clientUpdatedAt = now
+                ))
             }
 
             updated
         }
 
-        if (!updatedTask.isDone &&
-            notificationsEnabled &&
-            updatedTask.dueAt != null &&
-            updatedTask.dueAt > now
-        ) {
+        val reminder = dao.findReminder(id, uid)
+        if (!updatedTask.isDone && reminder != null && reminder.isEnabled && reminder.remindAt > now) {
             TaskReminderScheduler.schedule(
                 appContext,
                 updatedTask.id,
                 updatedTask.title,
-                updatedTask.dueAt
+                reminder.remindAt
             )
         } else {
             TaskReminderScheduler.cancel(
@@ -264,7 +235,7 @@ class GuestTaskRepository internal constructor(
                     val shouldEnable = enabled &&
                             !task.isDone &&
                             task.dueAt != null &&
-                            task.dueAt > now
+                            reminder.remindAt > now
 
                     dao.updateReminderStatus(
                         taskId = task.id,
@@ -273,19 +244,19 @@ class GuestTaskRepository internal constructor(
                         updatedAt = now
                     )
 
-                    Pair(task, shouldEnable)
+                    Triple(task, reminder.remindAt, shouldEnable)
                 }
             }
         }
 
-        tasksToProcess.forEach { (task, shouldEnable) ->
+        tasksToProcess.forEach { (task, remindAt, shouldEnable) ->
 
             if (shouldEnable) {
                 val scheduled = TaskReminderScheduler.schedule(
                     appContext,
                     task.id,
                     task.title,
-                    task.dueAt!!
+                    remindAt
                 )
 
                 if (!scheduled) {
