@@ -1,0 +1,65 @@
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/root" android:layout_width="match_parent" android:layout_height="match_parent"
+    android:fillViewport="true" android:background="@color/surface">
+    <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+        android:paddingHorizontal="20dp" android:paddingBottom="32dp" android:orientation="vertical">
+        <Button android:id="@+id/back" android:layout_width="48dp" android:layout_height="48dp"
+            android:background="?android:attr/selectableItemBackgroundBorderless" android:text="‹" android:textSize="32sp"
+            android:textColor="@color/ink" android:contentDescription="@string/back"/>
+        <LinearLayout android:id="@+id/form" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical">
+            <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="24dp"
+                android:text="@string/register_title" android:textColor="@color/ink" android:textSize="26sp" android:textStyle="bold"/>
+            <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="8dp" android:layout_marginBottom="26dp"
+                android:text="@string/register_subtitle" android:textColor="@color/muted" android:textSize="14sp"/>
+            <TextView style="@style/FormLabel" android:text="@string/full_name" android:labelFor="@id/fullName"/>
+            <EditText android:id="@+id/fullName" style="@style/FormInput" android:hint="@string/full_name_hint"
+                android:inputType="textPersonName|textCapWords" android:autofillHints="personName" android:imeOptions="actionNext"/>
+            <TextView style="@style/FormLabel" android:layout_marginTop="18dp" android:text="@string/email_label" android:labelFor="@id/email"/>
+            <EditText android:id="@+id/email" style="@style/FormInput" android:hint="@string/email_hint" android:inputType="textEmailAddress"
+                android:autofillHints="emailAddress" android:imeOptions="actionNext"/>
+            <TextView style="@style/FormLabel" android:layout_marginTop="18dp" android:text="@string/password_label" android:labelFor="@id/password"/>
+            <LinearLayout android:layout_width="match_parent" android:layout_height="52dp" android:background="@drawable/bg_input" android:gravity="center_vertical">
+                <EditText android:id="@+id/password" style="@style/FormInput" android:layout_width="0dp" android:layout_weight="1"
+                    android:background="@android:color/transparent" android:hint="@string/register_password_hint" android:inputType="textPassword"
+                    android:autofillHints="newPassword" android:saveEnabled="false" android:imeOptions="actionNext"/>
+                <ImageButton android:id="@+id/togglePassword" android:layout_width="48dp" android:layout_height="48dp" android:padding="13dp"
+                    android:background="?android:attr/selectableItemBackgroundBorderless" android:src="@drawable/ic_eye_off" android:contentDescription="@string/password_show"/>
+            </LinearLayout>
+            <TextView style="@style/FormLabel" android:layout_marginTop="18dp" android:text="@string/confirm_password" android:labelFor="@id/confirmPassword"/>
+            <LinearLayout android:layout_width="match_parent" android:layout_height="52dp" android:background="@drawable/bg_input" android:gravity="center_vertical">
+                <EditText android:id="@+id/confirmPassword" style="@style/FormInput" android:layout_width="0dp" android:layout_weight="1"
+                    android:background="@android:color/transparent" android:hint="@string/confirm_password_hint" android:inputType="textPassword"
+                    android:autofillHints="newPassword" android:saveEnabled="false" android:imeOptions="actionDone"/>
+                <ImageButton android:id="@+id/toggleConfirm" android:layout_width="48dp" android:layout_height="48dp" android:padding="13dp"
+                    android:background="?android:attr/selectableItemBackgroundBorderless" android:src="@drawable/ic_eye_off" android:contentDescription="@string/password_show"/>
+            </LinearLayout>
+            <TextView android:id="@+id/error" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="12dp"
+                android:textSize="13sp" android:textColor="#B3261E" android:visibility="gone" android:accessibilityLiveRegion="polite"/>
+            <Button android:id="@+id/createAccount" style="@style/PrimaryButton" android:layout_marginTop="24dp" android:text="@string/register_action"/>
+            <Button android:id="@+id/toLogin" android:layout_width="match_parent" android:layout_height="48dp" android:layout_marginTop="8dp"
+                android:background="?android:attr/selectableItemBackground" android:text="@string/register_to_login" android:textAllCaps="false" android:textColor="@color/brand"/>
+            <Button android:id="@+id/continueOffline" style="@style/PrimaryButton" android:layout_marginTop="8dp"
+                android:background="@drawable/bg_input" android:textColor="@color/ink" android:text="@string/continue_offline"/>
+        </LinearLayout>
+        <ProgressBar android:id="@+id/loading" android:layout_width="28dp" android:layout_height="28dp"
+            android:layout_gravity="center_horizontal" android:layout_marginTop="16dp" android:visibility="gone"/>
+        <LinearLayout android:id="@+id/successPanel" android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:layout_marginTop="40dp" android:orientation="vertical" android:visibility="gone">
+            <ImageView android:layout_width="54dp" android:layout_height="54dp" android:padding="14dp" android:background="@drawable/bg_primary"
+                android:src="@drawable/ic_check" android:importantForAccessibility="no"/>
+            <TextView android:id="@+id/successTitle" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="18dp"
+                android:text="@string/register_created" android:textColor="@color/ink" android:textSize="24sp" android:textStyle="bold"/>
+            <TextView android:id="@+id/verificationMessage" android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:layout_marginTop="12dp" android:textSize="15sp" android:textColor="@color/muted"/>
+            <TextView android:id="@+id/profileWarning" android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:layout_marginTop="12dp" android:text="@string/register_profile_warning" android:textSize="13sp" android:textColor="#9B762E"/>
+            <TextView android:id="@+id/notice" android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:layout_marginTop="16dp" android:textSize="14sp" android:textColor="@color/ink" android:accessibilityLiveRegion="polite"/>
+            <Button android:id="@+id/checkVerified" style="@style/PrimaryButton" android:layout_marginTop="24dp" android:text="@string/verification_check"/>
+            <Button android:id="@+id/resend" style="@style/PrimaryButton" android:layout_marginTop="12dp"
+                android:background="@drawable/bg_input" android:textColor="@color/ink" android:text="@string/verification_resend"/>
+            <Button android:id="@+id/goHome" android:layout_width="match_parent" android:layout_height="48dp" android:layout_marginTop="12dp"
+                android:background="?android:attr/selectableItemBackground" android:text="@string/go_home" android:textAllCaps="false" android:textColor="@color/brand"/>
+        </LinearLayout>
+    </LinearLayout>
+</ScrollView>

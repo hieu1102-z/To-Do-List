@@ -1,0 +1,42 @@
+<resources>
+    <color name="editor_brand">#4F6BED</color>
+    <color name="editor_outline">#D9DCE5</color>
+    <color name="editor_hint">#969BAD</color>
+    <style name="TaskEditorLabel">
+        <item name="android:layout_width">match_parent</item>
+        <item name="android:layout_height">wrap_content</item>
+        <item name="android:textSize">12sp</item>
+        <item name="android:textColor">@color/ink</item>
+        <item name="android:fontFamily">sans-serif-medium</item>
+        <item name="android:includeFontPadding">false</item>
+        <item name="android:layout_marginBottom">7dp</item>
+    </style>
+    <style name="TaskEditorInput" parent="FormInput">
+        <item name="android:layout_height">44dp</item>
+        <item name="android:background">@drawable/bg_task_editor_input</item>
+        <item name="android:textColorHint">@color/editor_hint</item>
+        <item name="android:paddingTop">0dp</item>
+        <item name="android:paddingBottom">0dp</item>
+        <item name="android:includeFontPadding">false</item>
+        <item name="android:gravity">center_vertical</item>
+    </style>
+    <string name="task_editor_heading">Thêm công việc</string>
+    <string name="task_editor_edit_heading">Sửa công việc</string>
+    <string name="task_editor_save_changes">Lưu thay đổi</string>
+    <string name="task_editor_close_edit">Đóng cửa sổ sửa công việc</string>
+    <string name="task_editor_title">Tiêu đề *</string>
+    <string name="task_editor_title_hint">Bạn cần làm gì?</string>
+    <string name="task_editor_description">Mô tả</string>
+    <string name="task_editor_description_hint">Thêm ghi chú cho công việc…</string>
+    <string name="task_editor_due">Ngày đến hạn</string>
+    <string name="task_editor_reminder">Nhắc nhở</string>
+    <string name="task_editor_priority">Ưu tiên</string>
+    <string name="task_editor_category">Danh mục</string>
+    <string name="task_editor_repeat">Lặp lại</string>
+    <string name="task_editor_save">Lưu công việc</string>
+    <string name="task_editor_saving">Đang lưu…</string>
+    <string name="task_editor_close">Đóng màn hình thêm công việc</string>
+    <string name="task_editor_title_error">Vui lòng nhập tiêu đề</string>
+    <string name="task_editor_save_error">Không thể lưu công việc. Vui lòng thử lại.</string>
+    <string name="task_editor_repeat_unavailable">Tự động lặp lại công việc chưa được triển khai. Công việc này sẽ được lưu với lựa chọn Không.</string>
+</resources>
