@@ -49,7 +49,22 @@ class LoginActivity : WorkspaceActivity() {
             }
         })[LoginViewModel::class.java]
         binding.back.setOnClickListener { leave() }
-        binding.continueOffline.setOnClickListener { leave() }
+
+        binding.continueOffline.setOnClickListener {
+            viewModel.leave()
+
+            val intent = Intent(
+                this@LoginActivity,
+                com.finalexam.to_do_list.MainActivity::class.java
+            ).apply {
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK or
+                        Intent.FLAG_ACTIVITY_CLEAR_TASK
+            }
+
+            startActivity(intent)
+            finish()
+        }
+
         onBackPressedDispatcher.addCallback(this) { leave() }
         binding.togglePassword.setOnClickListener {
             visiblePassword = !visiblePassword
@@ -74,8 +89,22 @@ class LoginActivity : WorkspaceActivity() {
                     when (state) {
                         LoginState.Success -> {
                             binding.password.text.clear()
-                            Toast.makeText(this@LoginActivity, R.string.login_success, Toast.LENGTH_SHORT).show()
-                            setResult(RESULT_OK)
+
+                            Toast.makeText(
+                                this@LoginActivity,
+                                R.string.login_success,
+                                Toast.LENGTH_SHORT
+                            ).show()
+
+                            val intent = Intent(
+                                this@LoginActivity,
+                                com.finalexam.to_do_list.MainActivity::class.java
+                            ).apply {
+                                flags = Intent.FLAG_ACTIVITY_NEW_TASK or
+                                        Intent.FLAG_ACTIVITY_CLEAR_TASK
+                            }
+
+                            startActivity(intent)
                             finish()
                         }
                         is LoginState.Error -> showError(message(state.failure))

@@ -7,7 +7,30 @@
             <TextView android:id="@+id/date" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="6dp" android:textSize="12sp" android:textColor="@color/muted"/>
         </LinearLayout>
         <ImageButton android:id="@+id/search" android:layout_width="48dp" android:layout_height="48dp" android:padding="12dp" android:background="?android:attr/selectableItemBackgroundBorderless" android:src="@drawable/ic_search" android:contentDescription="Tìm công việc"/>
-        <ImageButton android:id="@+id/notifications" android:layout_width="48dp" android:layout_height="48dp" android:padding="12dp" android:background="?android:attr/selectableItemBackgroundBorderless" android:src="@drawable/ic_bell" android:contentDescription="Việc sắp đến hạn"/>
+        <FrameLayout
+            android:layout_width="48dp"
+            android:layout_height="48dp">
+
+            <ImageButton
+                android:id="@+id/notifications"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                android:padding="12dp"
+                android:background="?android:attr/selectableItemBackgroundBorderless"
+                android:src="@drawable/ic_bell"
+                android:contentDescription="Việc sắp đến hạn" />
+
+            <View
+                android:id="@+id/notificationBadge"
+                android:layout_width="9dp"
+                android:layout_height="9dp"
+                android:layout_gravity="top|end"
+                android:layout_marginTop="8dp"
+                android:layout_marginEnd="8dp"
+                android:background="@drawable/notification_badge"
+                android:visibility="gone" />
+
+        </FrameLayout>
     </LinearLayout>
     <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginHorizontal="20dp" android:layout_marginBottom="16dp" android:background="@drawable/bg_primary" android:padding="16dp" android:orientation="vertical">
         <TextView android:layout_width="match_parent" android:layout_height="wrap_content" android:text="Tiến độ hôm nay" android:textColor="#E6E9FF" android:textSize="12sp"/>

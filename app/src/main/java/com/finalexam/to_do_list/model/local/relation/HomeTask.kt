@@ -12,5 +12,9 @@ data class HomeTask(
     val done: Boolean,
     val completedAt: Long?,
     val createdAt: Long,
-    val updatedAt: Long
+    val updatedAt: Long,
+    val repeatType: String = "NONE",
+    val remindAt: Long? = null,
+    val reminderEnabled: Boolean? = null,
+    val participantNames: String? = null
 )

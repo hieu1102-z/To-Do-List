@@ -13,7 +13,123 @@ import java.util.concurrent.Executor
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [28], application = Application::class, manifest = Config.NONE)
 class GuestTaskRepositoryTest : DatabaseTestBase() {
-    private fun repository() = GuestTaskRepository(database, Executor { it.run() }, { it() })
+    private fun repository() = GuestTaskRepository(context, database, Executor { it.run() }, { it() })
+
+    @Test fun editReminderOptions() {
+        val repo = repository()
+        val due = System.currentTimeMillis() + 172_800_000L
+        success { repo.create("Before", "", "to do", 2, due, null, it) }
+        val task = rows(repo).single()
+        success { repo.toggle(task.id, it) }
+        execute("UPDATE tasks SET repeat_type='WEEKLY' WHERE id=?", task.id)
+        success { repo.updateWithReminder(task.id, "After", "New notes", "Học tập", 3, due, 60L, it) }
+        val changed = rows(repo).single()
+        assertEquals(task.id, changed.id)
+        assertEquals(task.createdAt, changed.createdAt)
+        assertTrue(changed.done)
+        assertEquals("WEEKLY", changed.repeatType)
+        assertEquals("New notes", changed.description)
+        assertEquals("Học tập", changed.category)
+        assertEquals(due - 3_600_000L, changed.remindAt)
+        assertEquals(false, changed.reminderEnabled)
+        success { repo.toggle(task.id, it) }
+        success { repo.updateWithReminder(task.id, "After", "New notes", "to do", 1, due, null, it) }
+        reopen()
+        assertNull(rows(repository()).single().remindAt)
+        assertEquals(1, count("tasks"))
+    }
+
+    @Test fun detailProjection() {
+        val repo = repository()
+        val due = System.currentTimeMillis() + 172_800_000L
+        success { repo.create("Detail", "Description", "Cá nhân", 3, due, 60L, it) }
+        val saved = rows(repo).single()
+        execute("UPDATE tasks SET repeat_type='WEEKLY' WHERE id=?", saved.id)
+        user("participant"); member("participant")
+        execute("UPDATE users SET full_name='Người nhận thật' WHERE uid='participant'")
+        execute("INSERT INTO task_participants(category_id,task_id,user_uid,joined_at) VALUES(?,?,?,10)", category, saved.id, "participant")
+        val detail = rows(repo).single()
+        assertEquals("WEEKLY", detail.repeatType)
+        assertEquals(due - 3_600_000L, detail.remindAt)
+        assertEquals("Người nhận thật", detail.participantNames)
+        assertEquals("Description", detail.description)
+        success { repo.setNotificationsEnabled(false, it) }
+        assertEquals(false, rows(repo).single().reminderEnabled)
+        reopen()
+        assertEquals("Người nhận thật", rows(repository()).single().participantNames)
+        execute("UPDATE category_members SET status='REMOVED' WHERE user_uid='participant'")
+        assertNull(rows(repository()).single().participantNames)
+    }
+
+    @Test fun unclassifiedPersists() {
+        val repo = repository()
+        success { repo.create("Unclassified", "", "to do", 2, null, null, it) }
+        success { repo.create("Another", "", "to do", 2, null, null, it) }
+        assertTrue(rows(repo).all { it.category == "to do" })
+        assertEquals("1", scalar("SELECT COUNT(*) FROM categories WHERE name_key='to do'"))
+        assertEquals("1", scalar("SELECT COUNT(*) FROM category_members m JOIN categories c ON c.id=m.category_id WHERE c.name_key='to do' AND m.role='OWNER' AND m.status='ACTIVE'"))
+        val saved = rows(repo).first()
+        reopen()
+        val reopened = repository()
+        assertEquals(2, rows(reopened).size)
+        success { reopened.save(saved.id, "Moved", "", "Học tập", 2, null, it) }
+        assertEquals("Học tập", rows(reopened).first { it.id == saved.id }.category)
+        success { reopened.save(saved.id, "Back", "", "to do", 2, null, it) }
+        assertEquals("to do", rows(reopened).first { it.id == saved.id }.category)
+        sql.query("PRAGMA foreign_key_check").use { assertFalse(it.moveToFirst()) }
+    }
+
+    @Test fun createOptions() {
+        val repo = repository()
+        val due = System.currentTimeMillis() + 172_800_000L
+        success { repo.create("New task", "Notes", "Học tập", 3, due, 60L, it) }
+        val saved = rows(repo).single()
+        assertEquals("Học tập", saved.category)
+        assertEquals(3, saved.priority)
+        assertEquals(due, saved.dueAt)
+        assertEquals((due - 3_600_000L).toString(), scalar("SELECT remind_at FROM task_reminders"))
+        reopen()
+        assertEquals(saved.id, rows(repository()).single().id)
+        assertEquals(1, count("task_reminders"))
+    }
+
+    @Test fun createWithoutReminder() {
+        val repo = repository()
+        success { repo.create("No reminder", "", "Mua sắm", 1, System.currentTimeMillis() + 86_400_000L, null, it) }
+        assertEquals(1, count("tasks"))
+        assertEquals(0, count("task_reminders"))
+        val id = rows(repo).single().id
+        success { repo.toggle(id, it) }
+        success { repo.toggle(id, it) }
+        assertEquals(0, count("task_reminders"))
+    }
+
+    @Test fun reminderSurvivesEdits() {
+        val repo = repository()
+        val due = System.currentTimeMillis() + 172_800_000L
+        success { repo.create("Reminder", "", "Cá nhân", 2, due, 60L, it) }
+        val id = rows(repo).single().id
+        success { repo.toggle(id, it) }
+        success { repo.toggle(id, it) }
+        assertEquals((due - 3_600_000L).toString(), scalar("SELECT remind_at FROM task_reminders"))
+        success { repo.save(id, "Renamed", "", "Cá nhân", 2, due + 60_000L, it) }
+        assertEquals((due - 3_540_000L).toString(), scalar("SELECT remind_at FROM task_reminders"))
+        success { repo.setNotificationsEnabled(false, it) }
+        success { repo.setNotificationsEnabled(true, it) }
+        assertEquals((due - 3_540_000L).toString(), scalar("SELECT remind_at FROM task_reminders"))
+    }
+
+    @Test fun saveOnceWhileBusy() {
+        val pending = java.util.ArrayDeque<Runnable>()
+        val repo = GuestTaskRepository(context, database, Executor { pending.add(it) }, { it() })
+        val model = com.finalexam.to_do_list.controller.home.AddTaskViewModel()
+        repeat(2) { model.save(repo, "One task", "", "Cá nhân", 2, null, null) }
+        assertEquals(1, pending.size)
+        assertEquals(com.finalexam.to_do_list.controller.home.AddTaskViewModel.SaveState.SAVING, model.state.value)
+        pending.remove().run()
+        assertEquals(1, count("tasks"))
+        assertEquals(com.finalexam.to_do_list.controller.home.AddTaskViewModel.SaveState.SAVED, model.state.value)
+    }
     private fun rows(repo: GuestTaskRepository): List<HomeTask> {
         var result: Result<List<HomeTask>>? = null
         repo.load { result = it }

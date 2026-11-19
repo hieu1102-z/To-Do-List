@@ -1,0 +1,17 @@
+<resources>
+    <string name="task_delete_heading">Xóa công việc này?</string>
+    <string name="task_delete_message">%1$s\nsẽ bị xóa. Không thể hoàn tác.</string>
+    <string name="task_delete_cancel">Hủy</string>
+    <string name="task_delete_confirm">Xóa</string>
+    <string name="task_delete_progress">Đang xóa…</string>
+    <string name="task_delete_failure">Không thể xóa công việc. Vui lòng thử lại.</string>
+    <style name="TaskDeleteButton" parent="PrimaryButton">
+        <item name="android:layout_width">0dp</item>
+        <item name="android:layout_weight">1</item>
+        <item name="android:layout_height">wrap_content</item>
+        <item name="android:minHeight">56dp</item>
+        <item name="android:padding">12dp</item>
+        <item name="android:textSize">16sp</item>
+        <item name="android:fontFamily">sans-serif-medium</item>
+    </style>
+</resources>

@@ -1,5 +1,27 @@
 # Cấu trúc dự án To Do List
 
+## Cửa sổ sửa công việc
+
+`EditTaskDialog` tái sử dụng cùng XML của form thêm công việc: ô tiêu đề/mô tả, ngày hạn và nhắc nhở cạnh nhau, chip ưu tiên, dropdown danh mục/lặp lại, nút Lưu thay đổi. Giữ dạng cửa sổ nổi và cuộn nội dung. Điền dữ liệu hiện có, không áp dụng mặc định tạo mới lên task cũ; giữ UUID, trạng thái hoàn thành và lịch lặp. Thay đổi lựa chọn nhắc nhở được lưu qua repository; nếu không thay đổi thì giữ nguyên khoảng nhắc đã lưu. Chưa triển khai thay đổi chu kỳ lặp.
+
+`DeleteTaskDialog` theo ảnh tham chiếu người dùng cung cấp: cửa sổ trắng bo góc, tiêu đề “Xóa công việc này?”, tên công việc thật và dòng “sẽ bị xóa. Không thể hoàn tác.”, nút Hủy nền nhạt và nút Xóa màu đỏ. Tên dài xuống dòng/cuộn, không dùng tên mẫu trong ảnh. Chỉ nút Xóa gọi repository bằng ID công việc; khóa nút khi đang xử lý, lỗi giữ cửa sổ để thử lại. Hủy/Back/chạm ngoài trước khi xác nhận không thay đổi dữ liệu. Chỉ đóng cửa sổ cha và tải lại danh sách sau khi xóa thành công. Không mở Activity hoặc emulator trong kiểm thử.
+
+## Cửa sổ chi tiết công việc
+
+Chạm công việc trên trang chủ hoặc trang nhắc nhở sẽ mở dialog chi tiết theo frame Figma `3:11961`, có nhãn trạng thái/ưu tiên/lặp lại, tiêu đề, thẻ thông tin, mô tả và nút hoàn thành/bỏ hoàn thành. Giữ dạng cửa sổ, nội dung dài cuộn bên trong; Sửa mở form hiện có, Xóa giữ bước xác nhận. Nhắc nhở và người nhận lấy từ DB, không dùng dữ liệu mẫu. Tạm ẩn toàn bộ phần Công việc con mà không xóa dữ liệu/bảng subtasks. Xem tài nguyên tại `design-assets/task-detail/README.md`. Chỉ kiểm thử code/JVM và lint, không mở Activity/emulator.
+
+## Giao diện thêm công việc
+
+Nút + mở `AddTaskActivity` toàn màn hình, dựa trên frame Figma `3:11877` và các điều chỉnh: Ưu tiên dùng chip; Danh mục và Lặp lại dùng dropdown. Nút Lưu công việc cố định ở dưới, nội dung cuộn khi bàn phím mở. Hạn mặc định là 00:00 ngày tiếp theo theo múi giờ thiết bị (tính theo ngày lịch, không cộng cố định 24 giờ); luôn hiển thị ngày/giờ, không còn placeholder hoặc nút Bỏ hạn. Ưu tiên mặc định Trung bình; Danh mục luôn mặc định `to do`, kể cả khi mở từ trang chủ đang lọc danh mục; Lặp lại mặc định Không.
+
+`to do` là lựa chọn đầu trong dropdown, biểu thị chưa phân loại. Do DBML yêu cầu `tasks.category_id NOT NULL`, repository tạo lười một vùng chứa `to do` cùng membership OWNER/ACTIVE khi lưu lần đầu; các lần sau dùng lại. Không gán công việc chưa phân loại vào Cá nhân hoặc các danh mục người dùng khác, không đổi schema hay chuyển dữ liệu cũ. Bộ lọc và form sửa nhận diện `to do` để không tự đổi phân loại khi sửa tiêu đề.
+
+Nhắc nhở cho phép không nhắc, đúng giờ hoặc trước 5/15/30/60 phút/1 ngày; lưu vào `task_reminders` cùng transaction với công việc. Giữ khoảng nhắc khi sửa hạn, hoàn thành/bỏ hoàn thành và bật/tắt thông báo. Việc phát thông báo vẫn phụ thuộc quyền thông báo, quyền báo thức chính xác và cài đặt hệ thống hiện có. ViewModel chặn lưu lặp khi đang xử lý và giữ trạng thái yêu cầu khi xoay màn hình; SavedState giữ lựa chọn ngày/danh mục/ưu tiên/nhắc nhở.
+
+Dropdown Lặp lại hiện chỉ lựa chọn Không hoạt động; chọn các chu kỳ khác sẽ hiển thị thông báo chưa triển khai và trở về Không. Chưa thêm bộ xử lý tự động tạo công việc lặp. Tài nguyên và kích thước tham chiếu ghi tại `design-assets/task-editor/README.md`.
+
+Kiểm tra thay đổi này bằng build APK, lint và test JVM (SQLite/Repository/ViewModel); không mở emulator hoặc Activity để kiểm thử giao diện.
+
 Cấu trúc thư mục được dựng theo mục 5 và 5.1 của `../docs/Tuan_3.docx`, đối chiếu với `../docs/Tuần 1.docx`, `../docs/TodoList_DB_v2.dbml` và `../docs/Thiet-ke-chia-se-theo-danh-muc.md`.
 
 Đã triển khai trang chủ, đăng nhập và đăng ký bằng XML Layout/ViewBinding, dùng chung phong cách giao diện của [thiết kế Figma](https://www.figma.com/design/6abAD9XNzVCXCh4Mx4sBT3/to-do-app). Các phần chưa triển khai vẫn có `.gitkeep` để Git lưu cấu trúc.
