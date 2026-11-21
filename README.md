@@ -2,13 +2,13 @@
 
 ## Cửa sổ sửa công việc
 
-`EditTaskDialog` tái sử dụng cùng XML của form thêm công việc: ô tiêu đề/mô tả, ngày hạn và nhắc nhở cạnh nhau, chip ưu tiên, dropdown danh mục/lặp lại, nút Lưu thay đổi. Giữ dạng cửa sổ nổi và cuộn nội dung. Điền dữ liệu hiện có, không áp dụng mặc định tạo mới lên task cũ; giữ UUID, trạng thái hoàn thành và lịch lặp. Thay đổi lựa chọn nhắc nhở được lưu qua repository; nếu không thay đổi thì giữ nguyên khoảng nhắc đã lưu. Chưa triển khai thay đổi chu kỳ lặp.
+`EditTaskDialog` tái sử dụng cùng XML của form thêm công việc: ô tiêu đề/mô tả, ngày hạn và nhắc nhở cạnh nhau, chip ưu tiên, dropdown danh mục/lặp lại, nút Lưu thay đổi. Giữ dạng cửa sổ nổi và cuộn nội dung. Điền dữ liệu hiện có, giữ UUID và trạng thái hoàn thành. Thay đổi nhắc nhở/lịch lặp được lưu qua repository; nếu không đổi nhắc nhở thì giữ nguyên khoảng nhắc đã lưu.
 
 `DeleteTaskDialog` theo ảnh tham chiếu người dùng cung cấp: cửa sổ trắng bo góc, tiêu đề “Xóa công việc này?”, tên công việc thật và dòng “sẽ bị xóa. Không thể hoàn tác.”, nút Hủy nền nhạt và nút Xóa màu đỏ. Tên dài xuống dòng/cuộn, không dùng tên mẫu trong ảnh. Chỉ nút Xóa gọi repository bằng ID công việc; khóa nút khi đang xử lý, lỗi giữ cửa sổ để thử lại. Hủy/Back/chạm ngoài trước khi xác nhận không thay đổi dữ liệu. Chỉ đóng cửa sổ cha và tải lại danh sách sau khi xóa thành công. Không mở Activity hoặc emulator trong kiểm thử.
 
 ## Cửa sổ chi tiết công việc
 
-Chạm công việc trên trang chủ hoặc trang nhắc nhở sẽ mở dialog chi tiết theo frame Figma `3:11961`, có nhãn trạng thái/ưu tiên/lặp lại, tiêu đề, thẻ thông tin, mô tả và nút hoàn thành/bỏ hoàn thành. Giữ dạng cửa sổ, nội dung dài cuộn bên trong; Sửa mở form hiện có, Xóa giữ bước xác nhận. Nhắc nhở và người nhận lấy từ DB, không dùng dữ liệu mẫu. Tạm ẩn toàn bộ phần Công việc con mà không xóa dữ liệu/bảng subtasks. Xem tài nguyên tại `design-assets/task-detail/README.md`. Chỉ kiểm thử code/JVM và lint, không mở Activity/emulator.
+Chạm công việc sẽ mở dialog chi tiết có trạng thái/ưu tiên/lặp lại, hạn, nhắc nhở, danh mục, mô tả và nút hoàn thành/bỏ hoàn thành. Có thể thêm, sửa, đánh dấu và xóa mềm công việc con; dữ liệu lấy từ Room. Sửa mở form hiện có, Xóa giữ bước xác nhận.
 
 ## Giao diện thêm công việc
 
@@ -18,7 +18,7 @@ Nút + mở `AddTaskActivity` toàn màn hình, dựa trên frame Figma `3:11877
 
 Nhắc nhở cho phép không nhắc, đúng giờ hoặc trước 5/15/30/60 phút/1 ngày; lưu vào `task_reminders` cùng transaction với công việc. Giữ khoảng nhắc khi sửa hạn, hoàn thành/bỏ hoàn thành và bật/tắt thông báo. Việc phát thông báo vẫn phụ thuộc quyền thông báo, quyền báo thức chính xác và cài đặt hệ thống hiện có. ViewModel chặn lưu lặp khi đang xử lý và giữ trạng thái yêu cầu khi xoay màn hình; SavedState giữ lựa chọn ngày/danh mục/ưu tiên/nhắc nhở.
 
-Dropdown Lặp lại hiện chỉ lựa chọn Không hoạt động; chọn các chu kỳ khác sẽ hiển thị thông báo chưa triển khai và trở về Không. Chưa thêm bộ xử lý tự động tạo công việc lặp. Tài nguyên và kích thước tham chiếu ghi tại `design-assets/task-editor/README.md`.
+Lặp lại hỗ trợ Không, hằng ngày, hằng tuần và hằng tháng. Khi hoàn thành việc lặp, ứng dụng giữ bản ghi đã hoàn thành và tạo kỳ tiếp theo cùng công việc con; tháng ngắn hơn sẽ giới hạn ngày về ngày cuối tháng. Lịch lặp yêu cầu có ngày hạn.
 
 Kiểm tra thay đổi này bằng build APK, lint và test JVM (SQLite/Repository/ViewModel); không mở emulator hoặc Activity để kiểm thử giao diện.
 
@@ -32,12 +32,15 @@ Cấu trúc thư mục được dựng theo mục 5 và 5.1 của `../docs/Tuan_
 - Cấu hình Firebase: đặt `google-services.json` tại `app/google-services.json`, đúng package `com.finalexam.to_do_list`, và bật Email/Password trong Firebase Authentication. Gradle đọc cấu hình nếu tệp tồn tại; tệp này được bỏ qua bởi Git. Không có cấu hình thì offline vẫn hoạt động và đăng nhập báo chưa sẵn sàng.
 - Kiểm tra code và cơ sở dữ liệu: `gradlew.bat :app:assembleDebug :app:testDebugUnitTest :app:lintDebug --max-workers=2`. Database test chạy bằng JUnit/Robolectric với SQLite native trên JVM, không khởi tạo Activity hoặc mở emulator. Người dùng tự kiểm tra giao diện.
 
-Schema DBML v2 được kiểm tra bằng build APK, lint và 19 kiểm thử JVM: schema thực tế đối chiếu DBML; PK/FK/CHECK/default/index; partial unique index; CASCADE; routing metadata; migration và rollback; CRUD và dữ liệu khách qua lần mở lại. Không chạy kiểm thử giao diện/emulator cho thay đổi này. Chưa thử đăng nhập bằng tài khoản Firebase thật. Báo cáo test: `app/build/reports/tests/testDebugUnitTest/index.html`; báo cáo lint: `app/build/reports/lint-results-debug.html`.
+Build APK debug hiện thành công. Test JVM đã biên dịch, nhưng Gradle chưa chạy được vì cấu hình test tham chiếu `../docs/TodoList_DB_v2.dbml` không có trong workspace hiện tại. Chưa thử đăng nhập bằng tài khoản Firebase thật hoặc kiểm thử giao diện trên thiết bị.
 
 ## Chức năng đã triển khai
 
 - Trang chủ: ngày hiện tại, tiến độ thực tế, Hôm nay / 7 ngày tới / Quá hạn / Đã xong, tìm kiếm, chọn ngày và lọc danh mục.
-- Công việc offline: tạo, sửa, xóa có xác nhận, hoàn thành/bỏ hoàn thành, tiêu đề, mô tả, danh mục, mức ưu tiên và hạn ngày/giờ. Dữ liệu khởi tạo trống; không tự chèn công việc mẫu trong Figma.
+- Công việc offline trong Room: tạo, sửa, xóa mềm có xác nhận, hoàn thành/bỏ hoàn thành, tiêu đề, mô tả, danh mục, mức ưu tiên, hạn, lặp lại, nhắc nhở và công việc con. Dữ liệu khởi tạo trống; không tự chèn công việc mẫu.
+- Thùng rác: xem task xóa mềm, khôi phục hoặc xóa vĩnh viễn từng task/dọn sạch. Xóa vĩnh viễn ghi thao tác `TASK/DELETE` vào `sync_queue` cùng transaction trước khi xóa task và các bản ghi con khỏi SQLite.
+- Danh mục Room: thêm, đổi tên và xóa mềm; tên không trùng trong danh mục còn hoạt động và không cho xóa danh mục cuối cùng.
+- Lịch, tìm kiếm/lọc/sắp xếp, hồ sơ cục bộ và trang thông báo riêng truy vấn dữ liệu lưu trên thiết bị.
 - Đăng nhập email/mật khẩu bằng Firebase Authentication, hiện/ẩn mật khẩu, kiểm tra dữ liệu, trạng thái tải/lỗi, đặt lại mật khẩu qua email, đăng xuất và quay lại dùng offline. SDK quản lý phiên, ứng dụng không lưu mật khẩu.
 - Đăng ký với họ tên, email, mật khẩu và xác nhận mật khẩu; gửi/gửi lại email xác minh và tải lại trạng thái xác minh từ Firebase.
 - Trang chủ và các thao tác offline không bị chặn bởi đăng nhập. Điểm vào chia sẻ tại Danh mục hoặc Cá nhân yêu cầu đăng nhập. Chưa triển khai backend hay thao tác chia sẻ thực tế.
@@ -66,11 +69,11 @@ Kết quả bổ sung chức năng đăng nhập: 35/35 test JVM vượt qua (19
 - Đăng ký không đổi UID của task khách, không nhập dữ liệu khách vào tài khoản và không kích hoạt đồng bộ. DB tài khoản vẫn là cache hồ sơ; bootstrap danh sách Cá nhân trên máy chủ và backend chia sẻ chưa triển khai.
 - Kiểm thử chỉ dùng gateway giả và SQLite native trên JVM, không tạo tài khoản/gửi email thật, không khởi tạo Activity hoặc emulator. Phần đăng ký bổ sung kiểm tra validation, email trùng, lỗi mạng, kết quả tạo một phần, gửi lại/cooldown, reload, hủy/đăng xuất và bảo toàn task khách. Thư viện Fragment kéo gián tiếp được ràng buộc tối thiểu 1.8.9 để tương thích Activity Result API.
 
-Kết quả sau bổ sung đăng ký: 55/55 test JVM vượt qua (35 test trước đó và 20 test đăng ký/xác minh mới), build APK thành công và lint không có lỗi; vẫn có cảnh báo lint. Chưa kiểm thử giao diện hoặc gửi email xác minh đến tài khoản thật.
+Các test đăng ký/xác minh được viết cho gateway giả; cần khôi phục tệp DBML đầu vào của Gradle để chạy lại toàn bộ test suite sau các thay đổi mới.
 
 ## Schema và dữ liệu khách
 
-`AppDatabase` version 2 dùng đầy đủ 10 Entity Kotlin theo `TodoList_DB_v2.dbml`; Room 2.8.4 sinh mã qua KSP2. DB khách vẫn có tên `guest-workspace.db` nhưng dùng cùng schema chuẩn, không còn bảng `guest_tasks` sau khi migration thành công. `GuestTaskRepository` xử lý dữ liệu trên luồng nền; trang chủ nhận projection `HomeTask`, không nhận Entity trực tiếp.
+`AppDatabase` version 3 dùng 10 Entity Kotlin theo `TodoList_DB_v2.dbml`, bổ sung `deleted_at` cho các bản ghi hỗ trợ xóa mềm. Room 2.8.4 sinh mã qua KSP2. DB khách có tên `guest-workspace.db`, dùng schema chuẩn; `GuestTaskRepository` xử lý dữ liệu trên luồng nền. Migration 2 → 3 thêm cột xóa mềm nếu chưa có.
 
 10 bảng: `users`, `categories`, `category_members`, `category_invitations`, `tasks`, `task_participants`, `subtasks`, `task_reminders`, `sync_queue`, `sync_state`. Tên cột, kiểu SQLite, NULL/default, PK/FK và index theo DBML. UID/UUID là String; thời gian và phiên bản là Long; Boolean lưu thành INTEGER 0/1.
 
@@ -82,14 +85,14 @@ Migration 1 → 2 chạy trong transaction: giữ nguyên UUID công việc, n�
 
 Room chưa mô hình hóa đầy đủ các CHECK và WHERE index trong Entity. `SchemaSql` là DDL bổ sung chung cho tạo mới và migration. Khi tạo DB mới, callback thay các bảng Room vừa tạo và còn rỗng bằng DDL đầy đủ CHECK; không sửa mã Room sinh tự động. Khi nâng cấp, migration dùng cùng DDL.
 
-Hai partial index `uq_one_active_owner` và `uq_pending_invite` được cài trong `onOpen`, sau bước Room xác thực schema, trước khi bootstrap/đọc ghi ứng dụng. Không khai báo chúng thành unique index toàn phần trong Entity. Migration tương lai phải gọi `removePartialIndexesForMigration` trước khi Room xác thực; callback sẽ cài lại chúng sau đó. Schema JSON trong `app/schemas` mô tả phần Room quản lý; DDL trong `SchemaSql` bổ sung CHECK và partial index. Test đối chiếu DB thực tế trực tiếp với DBML, gồm mở lại và migration.
+Các partial index `uq_category_owner_name`, `uq_one_active_owner` và `uq_pending_invite` được cài trong `onOpen`, sau bước Room xác thực schema, trước khi bootstrap/đọc ghi ứng dụng. Chúng loại trừ bản ghi đã xóa mềm khi áp dụng duy nhất tên danh mục. Migration gọi `removePartialIndexesForMigration` trước khi thay đổi schema; callback cài lại chúng sau đó. Schema JSON trong `app/schemas` mô tả phần Room quản lý; DDL trong `SchemaSql` bổ sung CHECK và partial index.
 
-- Công việc khách chỉ thuộc không gian trên thiết bị, không tạo Firebase user, không đưa vào outbox và không gửi UID cục bộ hoặc dữ liệu khách lên mạng. Hai bảng sync hiện tồn tại để giữ schema nhưng Repository khách không ghi vào chúng.
+- Công việc khách chỉ thuộc không gian trên thiết bị, không tạo Firebase user và không gửi UID cục bộ hoặc dữ liệu khách lên mạng. Khi xóa vĩnh viễn, một tombstone được ghi vào `sync_queue` cục bộ; chưa có worker/backend gửi hoặc nhận thao tác đồng bộ.
 - Đăng nhập/đăng xuất giữ nguyên dữ liệu offline. Chưa tự chuyển chủ sở hữu, nhập hoặc đồng bộ công việc khách vào tài khoản. Khi bổ sung chia sẻ cần thiết kế bước chuyển rõ ràng, giữ UUID và xác nhận của người dùng.
 - Công việc chưa đặt hạn hiển thị ở Hôm nay. 7 ngày tới gồm hôm nay đến hết ngày thứ sáu tiếp theo theo múi giờ thiết bị. Quá hạn so sánh thời điểm hạn với thời gian hiện tại, bao gồm việc trễ giờ ngay trong hôm nay.
 - Chức năng tài khoản/chia sẻ trực tuyến sau này tiếp tục dùng UID/UUID, phân quyền và giao thức trong docs. Đăng nhập chỉ là điều kiện cần; backend vẫn phải kiểm tra quyền và email xác minh khi nhận lời mời.
 
-Công việc con, lặp lại, alarm/thông báo hệ thống, quản lý danh mục tùy chỉnh, backend chia sẻ và đồng bộ chưa triển khai. Nút chuông hiện xem danh sách việc có hạn trên thiết bị, chưa lập lịch thông báo.
+Firebase hiện chỉ xử lý đăng ký/đăng nhập và hồ sơ xác thực. Tác vụ, danh mục, công việc con, nhắc nhở và thông báo được lưu cục bộ bằng Room/SQLite. Đồng bộ đa thiết bị và chia sẻ/backend chưa triển khai; tombstone mới chỉ nằm trong hàng đợi SQLite, chưa tới máy chủ hoặc thiết bị khác.
 
 ## Cây thư mục theo tài liệu
 
@@ -139,8 +142,8 @@ Cây trên thể hiện các thư mục theo tài liệu; các tệp và thư m�
 | `model/local/entity` | Các Entity tương ứng 10 bảng trong DBML v2. |
 | `model/local/relation` | Quan hệ dữ liệu Room, ví dụ `TaskWithDetails`. |
 | `model/local` | `AppDatabase`. |
-| `model/remote` | Firebase Authentication, đọc Firestore listener/snapshot và gửi Cloud Functions callable. |
-| `model/repository` | Truy cập dữ liệu, quy tắc nghiệp vụ, quyền và phối hợp đồng bộ. |
+| `model/remote` | Adapter Firebase Authentication; chưa tích hợp Firestore hoặc Cloud Functions. |
+| `model/repository` | Truy cập Room, quy tắc nghiệp vụ cục bộ và điều phối xác thực. |
 | `controller` | Activity/Fragment điều khiển các màn hình theo từng nhóm chức năng. |
 | `controller/sharing` | Chia sẻ danh sách, thành viên và lời mời trong ứng dụng. |
 | `view/adapter` | Adapter hiển thị công việc, danh sách và thành viên. |

@@ -26,6 +26,7 @@ data class CategoryInvitationEntity(
     @ColumnInfo(name = "expires_at") val expiresAt: Long,
     @ColumnInfo(name = "server_updated_at") val serverUpdatedAt: Long? = null,
     @ColumnInfo(name = "revision", defaultValue = "0") val revision: Long = 0L,
-    @ColumnInfo(name = "server_seq", defaultValue = "0") val serverSeq: Long = 0L
+    @ColumnInfo(name = "server_seq", defaultValue = "0") val serverSeq: Long = 0L,
+    @ColumnInfo(name = "deleted_at") val deletedAt: Long? = null
 )
 

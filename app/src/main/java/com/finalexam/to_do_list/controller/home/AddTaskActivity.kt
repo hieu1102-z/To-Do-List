@@ -35,8 +35,9 @@ class AddTaskActivity : WorkspaceActivity() {
     private var dueAt: Long = TaskDefaults.nextMidnight()
     private var reminderMinutes: Long? = 0L
     private var priority = 2
+    private var repeatType = "NONE"
     private var category = TaskDefaults.UNCATEGORIZED
-    private val categoryNames = TaskDefaults.categories
+    private var categoryNames = TaskDefaults.categories
     private val reminderValues = listOf(null, 0L, 5L, 15L, 30L, 60L, 1440L)
     private val reminderLabels = arrayOf("Không nhắc", "Đúng giờ", "Trước 5 phút", "Trước 15 phút", "Trước 30 phút", "Trước 1 giờ", "Trước 1 ngày")
 
@@ -49,11 +50,21 @@ class AddTaskActivity : WorkspaceActivity() {
         category = savedInstanceState?.getString("category")
             ?.takeIf { it in categoryNames } ?: TaskDefaults.UNCATEGORIZED
         priority = savedInstanceState?.getInt("priority", 2) ?: 2
+        repeatType = savedInstanceState?.getString("repeatType") ?: "NONE"
         dueAt = savedInstanceState?.takeIf { it.containsKey("dueAt") }?.getLong("dueAt")
             ?: TaskDefaults.nextMidnight()
         reminderMinutes = if (savedInstanceState?.getBoolean("noReminder") == true) null
             else savedInstanceState?.getLong("reminderMinutes", 0L) ?: 0L
         setupDropdowns()
+        GuestTaskRepository.get(this).categories { result ->
+            result.onSuccess { names ->
+                if (isFinishing || isDestroyed) return@onSuccess
+                categoryNames = names.ifEmpty { TaskDefaults.categories }
+                if (category !in categoryNames) category = categoryNames.first()
+                binding.categories.adapter = adapter(categoryNames)
+                binding.categories.setSelection(categoryNames.indexOf(category))
+            }
+        }
         binding.close.setOnClickListener { if (!saving()) finish() }
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() { if (!saving()) finish() }
@@ -73,7 +84,7 @@ class AddTaskActivity : WorkspaceActivity() {
                 return@setOnClickListener
             }
             model.save(GuestTaskRepository.get(this), binding.taskTitle.text.toString(),
-                binding.description.text.toString(), category, priority, dueAt, reminderMinutes)
+                binding.description.text.toString(), category, priority, dueAt, reminderMinutes, repeatType)
         }
         renderChoices()
         lifecycleScope.launch {
@@ -103,6 +114,7 @@ class AddTaskActivity : WorkspaceActivity() {
     override fun onSaveInstanceState(outState: Bundle) {
         outState.putString("category", category)
         outState.putInt("priority", priority)
+        outState.putString("repeatType", repeatType)
         outState.putLong("dueAt", dueAt)
         outState.putBoolean("noReminder", reminderMinutes == null)
         reminderMinutes?.let { outState.putLong("reminderMinutes", it) }
@@ -139,9 +151,6 @@ class AddTaskActivity : WorkspaceActivity() {
     }
 
     private fun setupDropdowns() {
-        fun adapter(items: List<String>) = ArrayAdapter(this, R.layout.item_task_selected, items).apply {
-            setDropDownViewResource(R.layout.item_task_dropdown)
-        }
         binding.categories.adapter = adapter(categoryNames)
         binding.categories.setSelection(categoryNames.indexOf(category))
         binding.categories.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
@@ -151,17 +160,17 @@ class AddTaskActivity : WorkspaceActivity() {
             }
         }
         binding.repeats.adapter = adapter(listOf("Không", "Hằng ngày", "Hằng tuần", "Hằng tháng"))
-        binding.repeats.setSelection(0)
+        binding.repeats.setSelection(listOf("NONE", "DAILY", "WEEKLY", "MONTHLY").indexOf(repeatType).coerceAtLeast(0))
         binding.repeats.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
             override fun onNothingSelected(parent: AdapterView<*>?) = Unit
             override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
-                if (position > 0) {
-                    binding.repeats.setSelection(0)
-                    AlertDialog.Builder(this@AddTaskActivity).setTitle(R.string.task_editor_repeat)
-                        .setMessage(R.string.task_editor_repeat_unavailable).setPositiveButton("Đã hiểu", null).show()
-                }
+                repeatType = listOf("NONE", "DAILY", "WEEKLY", "MONTHLY")[position]
             }
         }
+    }
+
+    private fun adapter(items: List<String>) = ArrayAdapter(this, R.layout.item_task_selected, items).apply {
+        setDropDownViewResource(R.layout.item_task_dropdown)
     }
 
     private fun chip(parent: ViewGroup, label: String, selected: Boolean,

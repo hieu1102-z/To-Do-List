@@ -183,6 +183,28 @@ class AuthRepository internal constructor(
         gateway.resetPassword(email.trim(), callback)
     }
 
+    fun updateDisplayName(name: String, callback: (Result<AuthUser>) -> Unit) {
+        val current = user ?: return callback(Result.failure(AuthFailure.SESSION_REQUIRED))
+        val normalized = name.trim()
+        if (normalized.isEmpty()) return callback(Result.failure(AuthFailure.NAME_REQUIRED))
+        gateway.updateDisplayName(current.uid, normalized) { result ->
+            result.fold({ updated ->
+                if (gateway.currentUser?.uid != current.uid || updated.uid != current.uid) {
+                    callback(Result.failure(AuthFailure.CANCELLED))
+                } else executor.execute {
+                    val cached = runCatching { profiles.cache(updated) }
+                    dispatch {
+                        callback(when {
+                            gateway.currentUser?.uid != current.uid -> Result.failure(AuthFailure.CANCELLED)
+                            cached.isFailure -> Result.failure(AuthFailure.LOCAL_STORAGE)
+                            else -> Result.success(updated)
+                        })
+                    }
+                }
+            }, { callback(Result.failure(it as? AuthFailure ?: AuthFailure.UNKNOWN)) })
+        }
+    }
+
     /** Cache SDK-restored identity without forcing a new online sign-in. */
     fun refreshProfile(callback: (Result<Unit>) -> Unit = {}) {
         val current = user ?: return callback(Result.success(Unit))

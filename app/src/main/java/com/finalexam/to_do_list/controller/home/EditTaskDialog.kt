@@ -38,6 +38,7 @@ internal object EditTaskDialog {
         var busy = false
         var dueAt = task.dueAt
         var priority = task.priority
+        var repeatType = task.repeatType
         var category = task.category
         var reminderChanged = false
         val originalOffset = task.remindAt?.let { at -> task.dueAt?.minus(at)?.div(60_000L) }
@@ -81,24 +82,27 @@ internal object EditTaskDialog {
         fun adapter(values: List<String>) = ArrayAdapter(activity, R.layout.item_task_selected, values).apply {
             setDropDownViewResource(R.layout.item_task_dropdown)
         }
-        val categories = (TaskDefaults.categories + task.category).distinct()
+        var categories = (TaskDefaults.categories + task.category).distinct()
         form.categories.adapter = adapter(categories)
         form.categories.setSelection(categories.indexOf(category))
         form.categories.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
             override fun onNothingSelected(parent: AdapterView<*>?) = Unit
             override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) { category = categories[position] }
         }
+        repository.categories { result ->
+            result.onSuccess { names ->
+                if (!dialog.isShowing || names.isEmpty()) return@onSuccess
+                categories = (names + task.category).distinct()
+                form.categories.adapter = adapter(categories)
+                form.categories.setSelection(categories.indexOf(category))
+            }
+        }
         form.repeats.adapter = adapter(listOf("Không", "Hằng ngày", "Hằng tuần", "Hằng tháng"))
         form.repeats.setSelection(initialRepeat)
         form.repeats.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
             override fun onNothingSelected(parent: AdapterView<*>?) = Unit
             override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
-                if (position != initialRepeat) {
-                    form.repeats.setSelection(initialRepeat)
-                    AlertDialog.Builder(activity).setTitle(R.string.task_editor_repeat)
-                        .setMessage("Thay đổi lịch lặp chưa được triển khai. Lịch lặp hiện tại được giữ nguyên.")
-                        .setPositiveButton("Đã hiểu", null).show()
-                }
+                repeatType = repeats[position]
             }
         }
         form.reminder.text = TaskDetailText.reminder(task)
@@ -153,9 +157,9 @@ internal object EditTaskDialog {
                     }
                 }
             }
-            if (reminderChanged) repository.updateWithReminder(task.id, form.taskTitle.text.toString(), form.description.text.toString(),
-                category, priority, dueAt, reminderMinutes, callback)
-            else repository.save(task.id, form.taskTitle.text.toString(), form.description.text.toString(), category, priority, dueAt, callback)
+            repository.updateTask(task.id, form.taskTitle.text.toString(), form.description.text.toString(),
+                category, priority, dueAt, if (reminderChanged) reminderMinutes else null,
+                reminderChanged, repeatType, callback)
         }
         val observer = LifecycleEventObserver { _, event -> if (event == Lifecycle.Event.ON_DESTROY) dialog.dismiss() }
         activity.lifecycle.addObserver(observer)

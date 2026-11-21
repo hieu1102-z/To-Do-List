@@ -46,6 +46,16 @@
                 android:text="@string/task_editor_description" android:textColor="@color/ink" android:textSize="15sp" android:textStyle="bold"/>
             <TextView android:id="@+id/description" android:layout_width="match_parent" android:layout_height="wrap_content"
                 android:layout_marginTop="8dp" android:textSize="13sp" android:textColor="#5B6270" android:lineSpacingMultiplier="1.6"/>
+            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:layout_marginTop="18dp" android:gravity="center_vertical">
+                <TextView android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content"
+                    android:text="Công việc con" android:textColor="@color/ink" android:textSize="15sp" android:textStyle="bold"/>
+                <TextView android:id="@+id/addSubtask" android:layout_width="wrap_content" android:layout_height="40dp"
+                    android:gravity="center" android:paddingHorizontal="12dp" android:text="+ Thêm"
+                    android:textColor="@color/editor_brand" android:textStyle="bold" android:clickable="true" android:focusable="true"/>
+            </LinearLayout>
+            <LinearLayout android:id="@+id/subtaskList" android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:orientation="vertical" android:layout_marginTop="6dp"/>
             <TextView android:id="@+id/error" android:layout_width="match_parent" android:layout_height="wrap_content"
                 android:layout_marginTop="12dp" android:text="@string/task_detail_error" android:textColor="#BA4B56"
                 android:textSize="13sp" android:visibility="gone" android:accessibilityLiveRegion="polite"/>
