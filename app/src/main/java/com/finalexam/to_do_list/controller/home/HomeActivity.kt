@@ -4,8 +4,10 @@ import android.app.AlertDialog
 import android.app.DatePickerDialog
 import android.app.TimePickerDialog
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.res.ColorStateList
 import android.graphics.Color
+import android.graphics.Bitmap
 import android.graphics.Paint
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
@@ -35,15 +37,20 @@ import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.Calendar
 import java.util.Locale
+import java.io.File
+import java.io.FileOutputStream
 import android.Manifest
 import android.content.pm.PackageManager
 import android.os.Build
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.OnBackPressedCallback
 import com.finalexam.to_do_list.notification.NotificationHelper
 import android.widget.Toast
 import com.finalexam.to_do_list.notification.NotificationPreferences
 import androidx.core.app.NotificationManagerCompat
+import androidx.core.content.ContextCompat
+import com.finalexam.to_do_list.notification.TaskReminderReceiver
 
 open class HomeActivity : WorkspaceActivity() {
     private lateinit var binding: ActivityHomeBinding
@@ -63,12 +70,45 @@ open class HomeActivity : WorkspaceActivity() {
     private var returnFromNotification: (() -> Unit)? = null
     private var searchRefresh: (() -> Unit)? = null
     private var profileAvatarImage: ImageView? = null
-    private val profileAvatarPicker = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+    private val reminderEventReceiver = object : android.content.BroadcastReceiver() {
+        override fun onReceive(context: android.content.Context, intent: Intent) {
+            val title = intent.getStringExtra(TaskReminderReceiver.EXTRA_TASK_TITLE) ?: return
+            updateNotificationBadge()
+            AlertDialog.Builder(this@HomeActivity)
+                .setTitle("Đến hạn công việc")
+                .setMessage("Công việc \"$title\" đã đến thời hạn.")
+                .setPositiveButton("Đã rõ", null)
+                .show()
+        }
+    }
+    private var reminderEventReceiverRegistered = false
+    private val profileAvatarPicker = registerForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
         if (uri != null) {
             runCatching { contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION) }
             GuestProfilePreferences.saveAvatar(this, uri.toString())
             profileAvatarImage?.apply { setImageURI(uri); visibility = View.VISIBLE }
         }
+    }
+    private val profileCamera = registerForActivityResult(ActivityResultContracts.TakePicturePreview()) { bitmap ->
+        if (bitmap != null) {
+            runCatching {
+                val avatarFile = File(filesDir, "profile-avatar.jpg")
+                FileOutputStream(avatarFile).use { output ->
+                    bitmap.compress(Bitmap.CompressFormat.JPEG, 92, output)
+                }
+                val uri = android.net.Uri.fromFile(avatarFile)
+                GuestProfilePreferences.saveAvatar(this, uri.toString())
+                profileAvatarImage?.apply { setImageURI(uri); visibility = View.VISIBLE }
+            }.onFailure {
+                Toast.makeText(this, "Không thể lưu ảnh vừa chụp.", Toast.LENGTH_LONG).show()
+            }
+        }
+    }
+
+    private fun launchProfileAvatarPicker() {
+        profileAvatarPicker.launch(
+            PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+        )
     }
     private var loading = true
     private var failed = false
@@ -149,6 +189,25 @@ open class HomeActivity : WorkspaceActivity() {
             auth.refreshProfile()
             reload()
         }
+    }
+
+    override fun onStart() {
+        super.onStart()
+        ContextCompat.registerReceiver(
+            this,
+            reminderEventReceiver,
+            IntentFilter(TaskReminderReceiver.ACTION_REMINDER),
+            ContextCompat.RECEIVER_NOT_EXPORTED
+        )
+        reminderEventReceiverRegistered = true
+    }
+
+    override fun onStop() {
+        if (reminderEventReceiverRegistered) {
+            unregisterReceiver(reminderEventReceiver)
+            reminderEventReceiverRegistered = false
+        }
+        super.onStop()
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
@@ -1297,15 +1356,15 @@ open class HomeActivity : WorkspaceActivity() {
         val camera = TextView(this).apply {
             text = "📷"; textSize = 18f; gravity = Gravity.CENTER; setTextColor(brand)
             background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(Color.WHITE); setStroke(dp(1), Color.rgb(218, 222, 234)) }
-            contentDescription = "Đổi ảnh đại diện"
+            contentDescription = "Chụp ảnh đại diện"
             isClickable = true; isFocusable = true
-            setOnClickListener { profileAvatarPicker.launch(arrayOf("image/*")) }
+            setOnClickListener { profileCamera.launch(null) }
         }
         avatarFrame.addView(camera, FrameLayout.LayoutParams(dp(38), dp(38), Gravity.BOTTOM or Gravity.END).apply { rightMargin = dp(4); bottomMargin = dp(4) })
         body.addView(avatarFrame, LinearLayout.LayoutParams(-1, dp(128)))
         body.addView(label("Đổi ảnh đại diện", 14f, brand, true).apply {
             gravity = Gravity.CENTER; setPadding(0, dp(8), 0, dp(32)); isClickable = true
-            setOnClickListener { profileAvatarPicker.launch(arrayOf("image/*")) }
+            setOnClickListener { launchProfileAvatarPicker() }
         })
 
         body.addView(label("Họ và tên", 14f, ink, true))
@@ -1638,7 +1697,7 @@ open class HomeActivity : WorkspaceActivity() {
         )
 
         // Avatar
-        val avatar = TextView(this).apply {
+        val avatarInitials = TextView(this).apply {
             val name = profileName
             text = name.trim().split(" ")
                 .filter { it.isNotEmpty() }
@@ -1652,13 +1711,26 @@ open class HomeActivity : WorkspaceActivity() {
             setTypeface(typeface, Typeface.BOLD)
             background = rounded(blue, 100)
         }
-
-        content.addView(
-            avatar,
-            LinearLayout.LayoutParams(dp(96), dp(96)).apply {
-                gravity = Gravity.CENTER
+        val avatarFrame = FrameLayout(this).apply {
+            clipToOutline = true
+            background = rounded(blue, 100)
+        }
+        avatarFrame.addView(avatarInitials, FrameLayout.LayoutParams(-1, -1))
+        val avatarImage = ImageView(this).apply {
+            scaleType = ImageView.ScaleType.CENTER_CROP
+            clipToOutline = true
+            visibility = View.GONE
+        }
+        GuestProfilePreferences.avatar(this)?.let { savedAvatar ->
+            runCatching {
+                avatarImage.setImageURI(android.net.Uri.parse(savedAvatar))
+                avatarImage.visibility = View.VISIBLE
             }
-        )
+        }
+        avatarFrame.addView(avatarImage, FrameLayout.LayoutParams(-1, -1))
+        content.addView(avatarFrame, LinearLayout.LayoutParams(dp(96), dp(96)).apply {
+            gravity = Gravity.CENTER
+        })
 
         content.addView(
             text(profileName, 24f, ink, true).apply {
