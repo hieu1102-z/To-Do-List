@@ -14,7 +14,7 @@ import java.security.MessageDigest
 @Database(entities = [UserEntity::class, CategoryEntity::class, CategoryMemberEntity::class,
     CategoryInvitationEntity::class, TaskEntity::class, TaskParticipantEntity::class,
     SubtaskEntity::class, TaskReminderEntity::class, SyncQueueEntity::class, SyncStateEntity::class],
-    version = 2, exportSchema = true)
+    version = 3, exportSchema = true)
 abstract class AppDatabase : RoomDatabase() {
     abstract fun tasks(): TaskDao
     abstract fun users(): UserDao
@@ -23,7 +23,7 @@ abstract class AppDatabase : RoomDatabase() {
         const val GUEST_DATABASE_NAME = "guest-workspace.db"
 
         fun guestBuilder(context: Context, name: String = GUEST_DATABASE_NAME): Builder<AppDatabase> =
-            builder(context, name, guest = true).addMigrations(MIGRATION_1_2)
+            builder(context, name, guest = true)
 
         fun accountFileName(uid: String): String {
             require(uid.isNotBlank() && !uid.startsWith("local:"))
@@ -37,6 +37,7 @@ abstract class AppDatabase : RoomDatabase() {
 
         private fun builder(context: Context, name: String, guest: Boolean): Builder<AppDatabase> =
             Room.databaseBuilder(context.applicationContext, AppDatabase::class.java, name)
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
                 .addCallback(object : Callback() {
                     override fun onCreate(db: SupportSQLiteDatabase) { SchemaSql.replaceEmptyRoomTables(db) }
                     override fun onOpen(db: SupportSQLiteDatabase) {
@@ -74,6 +75,21 @@ abstract class AppDatabase : RoomDatabase() {
                 db.query("PRAGMA foreign_key_check").use { check(!it.moveToFirst()) { "Foreign key violation during migration." } }
                 db.execSQL("DROP TABLE guest_tasks")
                 // Room validates modeled columns/FKs/indexes next. WHERE indexes are added onOpen.
+            }
+        }
+
+        val MIGRATION_2_3: Migration = object : Migration(2, 3) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                SchemaSql.removePartialIndexesForMigration(db)
+                listOf("categories", "tasks", "subtasks", "task_reminders", "category_invitations").forEach { table ->
+                    var hasDeletedAt = false
+                    db.query("PRAGMA table_info(`$table`)").use { cursor ->
+                        while (cursor.moveToNext()) {
+                            if (cursor.getString(cursor.getColumnIndexOrThrow("name")) == "deleted_at") hasDeletedAt = true
+                        }
+                    }
+                    if (!hasDeletedAt) db.execSQL("ALTER TABLE `$table` ADD COLUMN `deleted_at` INTEGER")
+                }
             }
         }
     }

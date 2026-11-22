@@ -4,6 +4,10 @@ import androidx.room.*
 import com.finalexam.to_do_list.model.local.entity.TaskEntity
 import com.finalexam.to_do_list.model.local.relation.HomeTask
 import com.finalexam.to_do_list.model.local.entity.TaskReminderEntity
+import com.finalexam.to_do_list.model.local.entity.SubtaskEntity
+import com.finalexam.to_do_list.model.local.entity.CategoryEntity
+import com.finalexam.to_do_list.model.local.entity.SyncQueueEntity
+import com.finalexam.to_do_list.model.local.relation.TrashTask
 
 @Dao
 interface TaskDao {
@@ -20,49 +24,89 @@ interface TaskDao {
          WHERE p.task_id=t.id AND pm.status='ACTIVE') AS participantNames
         FROM tasks t JOIN categories c ON c.id=t.category_id
         JOIN category_members m ON m.category_id=t.category_id
-        LEFT JOIN task_reminders r ON r.task_id=t.id AND r.user_uid=:uid
-        WHERE m.user_uid=:uid AND m.status='ACTIVE'
+        LEFT JOIN task_reminders r ON r.task_id=t.id AND r.user_uid=:uid AND r.deleted_at IS NULL
+        WHERE m.user_uid=:uid AND m.status='ACTIVE' AND t.deleted_at IS NULL AND c.deleted_at IS NULL
         ORDER BY t.is_done,t.due_at IS NULL,t.due_at,t.created_at DESC""")
     fun homeTasks(uid: String): List<HomeTask>
 
-    @Query("SELECT * FROM tasks WHERE id=:id") fun find(id: String): TaskEntity?
-    @Query("SELECT id FROM categories WHERE owner_uid=:uid AND name_key=:key")
+    @Query("SELECT * FROM tasks WHERE id=:id AND deleted_at IS NULL") fun find(id: String): TaskEntity?
+    @Query("SELECT * FROM tasks WHERE id=:id") fun findIncludingDeleted(id: String): TaskEntity?
+    @Query("SELECT t.id, t.title, c.name AS category, t.deleted_at AS deletedAt, t.category_id AS categoryId FROM tasks t JOIN categories c ON c.id=t.category_id WHERE t.deleted_at IS NOT NULL ORDER BY t.deleted_at DESC")
+    fun trashTasks(): List<TrashTask>
+    @Query("UPDATE tasks SET deleted_at=NULL, client_updated_at=:updatedAt WHERE id=:id AND deleted_at IS NOT NULL")
+    fun restoreTask(id: String, updatedAt: Long)
+    @Query("UPDATE categories SET deleted_at=NULL, client_updated_at=:updatedAt WHERE id=:id AND deleted_at IS NOT NULL")
+    fun restoreCategory(id: String, updatedAt: Long)
+    @Query("UPDATE subtasks SET deleted_at=NULL, client_updated_at=:updatedAt WHERE task_id=:taskId AND deleted_at IS NOT NULL")
+    fun restoreSubtasks(taskId: String, updatedAt: Long)
+    @Query("UPDATE task_reminders SET deleted_at=NULL, is_enabled=(:enabled AND remind_at > :now), client_updated_at=:updatedAt WHERE task_id=:taskId AND deleted_at IS NOT NULL")
+    fun restoreReminders(taskId: String, enabled: Boolean, now: Long, updatedAt: Long)
+    @Query("DELETE FROM tasks WHERE id=:id AND deleted_at IS NOT NULL") fun permanentlyDeleteTask(id: String)
+    @Query("DELETE FROM sync_queue WHERE entity_id=:entityId AND category_id=:categoryId") fun removeQueuedTaskOperations(entityId: String, categoryId: String)
+    @Insert fun enqueueSyncOperation(operation: SyncQueueEntity)
+    @Query("SELECT id FROM categories WHERE owner_uid=:uid AND name_key=:key AND deleted_at IS NULL")
     fun categoryId(uid: String, key: String): String?
+    @Query("SELECT c.name FROM categories c JOIN category_members m ON m.category_id=c.id WHERE m.user_uid=:uid AND m.status='ACTIVE' AND c.deleted_at IS NULL ORDER BY c.created_at, c.name")
+    fun categoryNames(uid: String): List<String>
+    @Query("SELECT * FROM categories WHERE owner_uid=:uid AND name_key=:key AND deleted_at IS NULL") fun findCategory(uid: String, key: String): CategoryEntity?
+    @Query("SELECT COUNT(*) FROM categories WHERE owner_uid=:uid AND deleted_at IS NULL") fun activeCategoryCount(uid: String): Int
+    @Query("UPDATE categories SET name=:name, name_key=:nameKey, client_updated_at=:updatedAt WHERE id=:id AND deleted_at IS NULL")
+    fun renameCategory(id: String, name: String, nameKey: String, updatedAt: Long)
+    @Query("UPDATE categories SET deleted_at=:deletedAt, client_updated_at=:updatedAt WHERE id=:id AND deleted_at IS NULL")
+    fun softDeleteCategory(id: String, deletedAt: Long, updatedAt: Long)
+    @Query("SELECT * FROM tasks WHERE category_id=:categoryId AND deleted_at IS NULL") fun activeTasksInCategory(categoryId: String): List<TaskEntity>
+    @Query("UPDATE tasks SET deleted_at=:deletedAt, client_updated_at=:updatedAt WHERE category_id=:categoryId AND deleted_at IS NULL")
+    fun softDeleteTasksInCategory(categoryId: String, deletedAt: Long, updatedAt: Long)
+    @Query("UPDATE tasks SET deleted_at=:deletedAt, client_updated_at=:updatedAt WHERE id=:id AND deleted_at IS NULL")
+    fun softDeleteTask(id: String, deletedAt: Long, updatedAt: Long)
     @Query("SELECT role FROM category_members WHERE category_id=:categoryId AND user_uid=:uid AND status='ACTIVE'")
     fun role(categoryId: String, uid: String): String?
     @Insert fun insert(task: TaskEntity)
     @Update fun update(task: TaskEntity)
-    @Query("DELETE FROM tasks WHERE id=:id") fun delete(id: String)
+    @Query("SELECT * FROM subtasks WHERE task_id=:taskId AND deleted_at IS NULL ORDER BY sort_order, client_updated_at")
+    fun subtasks(taskId: String): List<SubtaskEntity>
+    @Query("SELECT * FROM subtasks WHERE id=:id AND deleted_at IS NULL") fun findSubtask(id: String): SubtaskEntity?
+    @Query("SELECT COALESCE(MAX(sort_order), -1) + 1 FROM subtasks WHERE task_id=:taskId AND deleted_at IS NULL")
+    fun nextSubtaskOrder(taskId: String): Int
+    @Insert fun insertSubtask(subtask: SubtaskEntity)
+    @Update fun updateSubtask(subtask: SubtaskEntity)
+    @Query("UPDATE subtasks SET deleted_at=:deletedAt, client_updated_at=:updatedAt WHERE id=:id AND deleted_at IS NULL")
+    fun softDeleteSubtask(id: String, deletedAt: Long, updatedAt: Long)
+    @Query("UPDATE subtasks SET deleted_at=:deletedAt, client_updated_at=:updatedAt WHERE task_id=:taskId AND deleted_at IS NULL")
+    fun softDeleteSubtasks(taskId: String, deletedAt: Long, updatedAt: Long)
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     fun saveReminder(reminder: TaskReminderEntity)
 
     @Query("""
-    DELETE FROM task_reminders
-    WHERE task_id = :taskId AND user_uid = :userUid
-    """)
-    fun deleteReminder(taskId: String, userUid: String)
-
-    @Query("""
     SELECT * FROM task_reminders
-    WHERE user_uid = :userUid AND is_enabled = 1
+    WHERE user_uid = :userUid AND is_enabled = 1 AND deleted_at IS NULL
     """)
     fun getEnabledReminders(userUid: String): List<TaskReminderEntity>
 
     @Query("""
     SELECT * FROM task_reminders
-    WHERE user_uid = :userUid
+    WHERE user_uid = :userUid AND deleted_at IS NULL
     """)
     fun getAllReminders(userUid: String): List<TaskReminderEntity>
 
-    @Query("SELECT * FROM task_reminders WHERE task_id=:taskId AND user_uid=:userUid")
+    @Query("SELECT * FROM task_reminders WHERE task_id=:taskId AND user_uid=:userUid AND deleted_at IS NULL")
     fun findReminder(taskId: String, userUid: String): TaskReminderEntity?
+
+    @Query("UPDATE task_reminders SET deleted_at=:deletedAt, is_enabled=0, client_updated_at=:updatedAt WHERE task_id=:taskId AND user_uid=:userUid AND deleted_at IS NULL")
+    fun softDeleteReminder(taskId: String, userUid: String, deletedAt: Long, updatedAt: Long)
+
+    @Query("UPDATE task_reminders SET deleted_at=:deletedAt, is_enabled=0, client_updated_at=:updatedAt WHERE task_id=:taskId AND deleted_at IS NULL")
+    fun softDeleteRemindersForTask(taskId: String, deletedAt: Long, updatedAt: Long)
+
+    @Query("UPDATE task_reminders SET deleted_at=:deletedAt, is_enabled=0, client_updated_at=:updatedAt WHERE task_id IN (SELECT id FROM tasks WHERE category_id=:categoryId) AND deleted_at IS NULL")
+    fun softDeleteRemindersForCategory(categoryId: String, deletedAt: Long, updatedAt: Long)
 
     @Query("""
     UPDATE task_reminders
     SET is_enabled = :enabled,
         client_updated_at = :updatedAt
-    WHERE task_id = :taskId AND user_uid = :userUid
+    WHERE task_id = :taskId AND user_uid = :userUid AND deleted_at IS NULL
     """)
     fun updateReminderStatus(
         taskId: String,

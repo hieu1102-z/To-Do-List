@@ -20,7 +20,7 @@ internal object GuestBootstrap {
 
     fun ensureCategory(db: SupportSQLiteDatabase, uid: String, name: String, now: Long): String {
         val key = nameKey(name)
-        db.query("SELECT id FROM categories WHERE owner_uid=? AND name_key=?", arrayOf<Any?>(uid, key)).use {
+        db.query("SELECT id FROM categories WHERE owner_uid=? AND name_key=? AND deleted_at IS NULL", arrayOf<Any?>(uid, key)).use {
             if (it.moveToFirst()) return it.getString(0)
         }
         val id = UUID.randomUUID().toString()

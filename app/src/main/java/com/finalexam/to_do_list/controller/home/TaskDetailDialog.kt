@@ -9,6 +9,9 @@ import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
 import android.view.accessibility.AccessibilityNodeInfo
+import android.widget.CheckBox
+import android.widget.EditText
+import android.widget.LinearLayout
 import android.widget.TextView
 import androidx.activity.ComponentActivity
 import androidx.core.view.ViewCompat
@@ -20,7 +23,7 @@ import com.finalexam.to_do_list.model.local.relation.HomeTask
 import com.finalexam.to_do_list.model.repository.GuestTaskRepository
 import com.finalexam.to_do_list.util.TaskDetailText
 
-/** Figma detail content adapted to a floating window. Subtasks are deliberately omitted. */
+/** Figma detail content adapted to a floating window. */
 internal object TaskDetailDialog {
     fun show(activity: ComponentActivity, task: HomeTask, repository: GuestTaskRepository,
              onEdit: () -> Unit, onDelete: (AlertDialog) -> Unit, onChanged: () -> Unit) {
@@ -58,6 +61,75 @@ internal object TaskDetailDialog {
             ?: activity.getString(R.string.task_detail_no_participant)
         binding.description.text = task.description.takeIf { it.isNotBlank() }
             ?: activity.getString(R.string.task_detail_no_description)
+
+        fun showSubtasks() {
+            repository.subtasks(task.id) { result ->
+                if (activity.isFinishing || activity.isDestroyed) return@subtasks
+                result.fold({ items ->
+                    binding.subtaskList.removeAllViews()
+                    if (items.isEmpty()) {
+                        binding.subtaskList.addView(TextView(activity).apply {
+                            text = "Chưa có công việc con"; textSize = 12f; setTextColor(Color.rgb(119, 125, 139))
+                            setPadding(0, dp(6), 0, dp(8))
+                        })
+                    }
+                    items.forEach { subtask ->
+                        val row = LinearLayout(activity).apply { gravity = Gravity.CENTER_VERTICAL; setPadding(0, dp(2), 0, dp(2)) }
+                        lateinit var editSubtask: () -> Unit
+                        editSubtask = {
+                            val input = EditText(activity).apply { setSingleLine(true); setText(subtask.title); setSelection(text.length); filters = arrayOf(android.text.InputFilter.LengthFilter(200)) }
+                            AlertDialog.Builder(activity).setTitle("Sửa công việc con").setView(input)
+                                .setNegativeButton("Hủy", null).setPositiveButton("Lưu") { _, _ ->
+                                    repository.updateSubtask(subtask.id, input.text.toString(), subtask.isDone) { changed ->
+                                        if (changed.isSuccess) showSubtasks() else binding.error.apply { visibility = View.VISIBLE; text = "Không thể sửa công việc con." }
+                                    }
+                                }.show()
+                        }
+                        val check = CheckBox(activity).apply {
+                            isChecked = subtask.isDone; setButtonDrawable(R.drawable.task_checkbox); buttonTintList = null
+                            contentDescription = if (subtask.isDone) "Bỏ hoàn thành ${subtask.title}" else "Hoàn thành ${subtask.title}"
+                            setOnCheckedChangeListener { _, checked ->
+                                isEnabled = false
+                                repository.updateSubtask(subtask.id, subtask.title, checked) { changed ->
+                                    if (changed.isFailure) binding.error.apply { visibility = View.VISIBLE; text = "Không thể cập nhật công việc con." }
+                                    else showSubtasks()
+                                }
+                            }
+                        }
+                        row.addView(check, LinearLayout.LayoutParams(dp(38), dp(42)))
+                        val name = TextView(activity).apply {
+                            text = subtask.title; textSize = 13f; setTextColor(Color.rgb(27, 31, 59)); isClickable = true
+                            setOnClickListener { editSubtask.invoke() }
+                        }
+                        row.addView(name, LinearLayout.LayoutParams(0, -2, 1f))
+                        row.addView(TextView(activity).apply {
+                            text = "Xóa"; textSize = 12f; setTextColor(Color.rgb(190, 66, 82)); gravity = Gravity.CENTER
+                            setPadding(dp(8), dp(8), dp(4), dp(8)); isClickable = true
+                            setOnClickListener {
+                                AlertDialog.Builder(activity).setMessage("Xóa công việc con này?")
+                                    .setNegativeButton("Hủy", null)
+                                    .setPositiveButton("Xóa") { _, _ ->
+                                        repository.deleteSubtask(subtask.id) { deleted ->
+                                            if (deleted.isSuccess) showSubtasks() else binding.error.apply { visibility = View.VISIBLE; text = "Không thể xóa công việc con." }
+                                        }
+                                    }.show()
+                            }
+                        })
+                        binding.subtaskList.addView(row, LinearLayout.LayoutParams(-1, -2))
+                    }
+                }, { binding.error.apply { visibility = View.VISIBLE; text = "Không thể tải công việc con." } })
+            }
+        }
+        binding.addSubtask.setOnClickListener {
+            val input = EditText(activity).apply { hint = "Tên công việc con"; setSingleLine(true); filters = arrayOf(android.text.InputFilter.LengthFilter(200)) }
+            AlertDialog.Builder(activity).setTitle("Thêm công việc con").setView(input)
+                .setNegativeButton("Hủy", null).setPositiveButton("Thêm") { _, _ ->
+                    repository.addSubtask(task.id, input.text.toString()) { added ->
+                        if (added.isSuccess) showSubtasks() else binding.error.apply { visibility = View.VISIBLE; text = added.exceptionOrNull()?.message ?: "Không thể thêm công việc con." }
+                    }
+                }.show()
+        }
+        showSubtasks()
         binding.completeLabel.setText(if (task.done) R.string.task_detail_uncomplete else R.string.task_detail_complete)
         binding.complete.contentDescription = binding.completeLabel.text
         binding.complete.accessibilityDelegate = object : View.AccessibilityDelegate() {

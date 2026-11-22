@@ -18,6 +18,7 @@ data class TaskReminderEntity(
     @ColumnInfo(name = "is_enabled", defaultValue = "1") val isEnabled: Boolean = true,
     @ColumnInfo(name = "client_updated_at") val clientUpdatedAt: Long,
     @ColumnInfo(name = "server_updated_at") val serverUpdatedAt: Long? = null,
-    @ColumnInfo(name = "revision", defaultValue = "0") val revision: Long = 0L
+    @ColumnInfo(name = "revision", defaultValue = "0") val revision: Long = 0L,
+    @ColumnInfo(name = "deleted_at") val deletedAt: Long? = null
 )
 

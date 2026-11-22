@@ -11,10 +11,10 @@ class AddTaskViewModel : ViewModel() {
     private val mutableState = MutableStateFlow(SaveState.IDLE)
     val state = mutableState.asStateFlow()
     fun save(repository: GuestTaskRepository, title: String, description: String, category: String,
-             priority: Int, dueAt: Long?, reminderMinutes: Long?) {
+             priority: Int, dueAt: Long?, reminderMinutes: Long?, repeatType: String = "NONE") {
         if (mutableState.value == SaveState.SAVING || mutableState.value == SaveState.SAVED) return
         mutableState.value = SaveState.SAVING
-        repository.create(title, description, category, priority, dueAt, reminderMinutes) {
+        repository.create(title, description, category, priority, dueAt, reminderMinutes, repeatType) {
             mutableState.value = if (it.isSuccess) SaveState.SAVED else SaveState.ERROR
         }
     }

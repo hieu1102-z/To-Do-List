@@ -43,4 +43,18 @@ object NotificationPreferences {
             .putBoolean(KEY_UNREAD, unread)
             .apply()
     }
+
+    private const val KEY_DISMISSED_REMINDERS = "dismissed_reminders"
+
+    fun dismissedReminders(context: Context): Set<String> = context.getSharedPreferences(
+        PREF_NAME, Context.MODE_PRIVATE
+    ).getStringSet(KEY_DISMISSED_REMINDERS, emptySet())?.toSet() ?: emptySet()
+
+    fun dismissReminders(context: Context, taskIds: Set<String>) {
+        if (taskIds.isEmpty()) return
+        val preferences = context.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
+        val dismissed = preferences.getStringSet(KEY_DISMISSED_REMINDERS, emptySet())?.toMutableSet() ?: mutableSetOf()
+        dismissed.addAll(taskIds)
+        preferences.edit().putStringSet(KEY_DISMISSED_REMINDERS, dismissed).apply()
+    }
 }

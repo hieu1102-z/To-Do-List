@@ -8,9 +8,7 @@ import androidx.room.*
     foreignKeys = [
         ForeignKey(entity = UserEntity::class, parentColumns = ["uid"], childColumns = ["owner_uid"], onDelete = ForeignKey.NO_ACTION)
     ],
-    indices = [
-        Index(value = ["owner_uid", "name_key"], name = "uq_category_owner_name", unique = true)
-    ]
+    indices = []
 )
 data class CategoryEntity(
     @PrimaryKey @ColumnInfo(name = "id") val id: String,
@@ -22,6 +20,7 @@ data class CategoryEntity(
     @ColumnInfo(name = "client_updated_at") val clientUpdatedAt: Long,
     @ColumnInfo(name = "server_updated_at") val serverUpdatedAt: Long? = null,
     @ColumnInfo(name = "revision", defaultValue = "0") val revision: Long = 0L,
-    @ColumnInfo(name = "server_seq", defaultValue = "0") val serverSeq: Long = 0L
+    @ColumnInfo(name = "server_seq", defaultValue = "0") val serverSeq: Long = 0L,
+    @ColumnInfo(name = "deleted_at") val deletedAt: Long? = null
 )
 
