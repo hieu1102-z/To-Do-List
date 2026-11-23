@@ -37,7 +37,7 @@ class DatabaseMigrationTest {
         var database = AppDatabase.guestBuilder(context, name).allowMainThreadQueries().build()
         try {
             val sql = database.openHelper.writableDatabase
-            assertEquals(2, sql.version)
+            assertEquals(4, sql.version)
             val task = database.tasks().find("stable-uuid")!!
             assertEquals("Original title", task.title)
             assertEquals("Notes", task.description)

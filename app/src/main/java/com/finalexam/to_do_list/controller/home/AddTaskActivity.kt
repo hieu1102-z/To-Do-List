@@ -21,7 +21,7 @@ import androidx.lifecycle.repeatOnLifecycle
 import com.finalexam.to_do_list.R
 import com.finalexam.to_do_list.controller.WorkspaceActivity
 import com.finalexam.to_do_list.databinding.ActivityAddTaskBinding
-import com.finalexam.to_do_list.model.repository.GuestTaskRepository
+import com.finalexam.to_do_list.model.repository.*
 import com.finalexam.to_do_list.util.TaskDefaults
 import kotlinx.coroutines.launch
 import java.time.Instant
@@ -36,8 +36,9 @@ class AddTaskActivity : WorkspaceActivity() {
     private var reminderMinutes: Long? = 0L
     private var priority = 2
     private var repeatType = "NONE"
-    private var category = TaskDefaults.UNCATEGORIZED
-    private var categoryNames = TaskDefaults.categories
+    private lateinit var repository: UnifiedTaskRepository
+    private var categoryNames = emptyList<WorkspaceCategory>()
+    private lateinit var category: WorkspaceCategory
     private val reminderValues = listOf(null, 0L, 5L, 15L, 30L, 60L, 1440L)
     private val reminderLabels = arrayOf("Không nhắc", "Đúng giờ", "Trước 5 phút", "Trước 15 phút", "Trước 30 phút", "Trước 1 giờ", "Trước 1 ngày")
 
@@ -47,8 +48,14 @@ class AddTaskActivity : WorkspaceActivity() {
         setContentView(binding.root)
         applyInsets(binding.root)
         model = ViewModelProvider(this)[AddTaskViewModel::class.java]
-        category = savedInstanceState?.getString("category")
-            ?.takeIf { it in categoryNames } ?: TaskDefaults.UNCATEGORIZED
+        repository = UnifiedTaskRepository.get(this)
+        val selectedUid = if (savedInstanceState?.containsKey("category") == true) savedInstanceState.getString("categoryUid")
+            else if (intent.hasExtra("categoryId")) intent.getStringExtra("categoryUid") else repository.currentUid
+        val account = selectedUid?.takeIf { it == repository.currentUid }
+        val selectedId = savedInstanceState?.getString("category") ?: intent.getStringExtra("categoryId")
+        category = WorkspaceCategory(CategoryRef(WorkspaceRef(account), ""), TaskDefaults.UNCATEGORIZED, "OWNER")
+        categoryNames = listOf(category)
+        var optionsLoaded = false
         priority = savedInstanceState?.getInt("priority", 2) ?: 2
         repeatType = savedInstanceState?.getString("repeatType") ?: "NONE"
         dueAt = savedInstanceState?.takeIf { it.containsKey("dueAt") }?.getLong("dueAt")
@@ -56,14 +63,27 @@ class AddTaskActivity : WorkspaceActivity() {
         reminderMinutes = if (savedInstanceState?.getBoolean("noReminder") == true) null
             else savedInstanceState?.getLong("reminderMinutes", 0L) ?: 0L
         setupDropdowns()
-        GuestTaskRepository.get(this).categories { result ->
-            result.onSuccess { names ->
-                if (isFinishing || isDestroyed) return@onSuccess
-                categoryNames = names.ifEmpty { TaskDefaults.categories }
-                if (category !in categoryNames) category = categoryNames.first()
-                binding.categories.adapter = adapter(categoryNames)
-                binding.categories.setSelection(categoryNames.indexOf(category))
+        repository.categories { result ->
+            if (isFinishing || isDestroyed) return@categories
+            val actual = result.getOrDefault(emptyList()).filter { it.role != "VIEWER" }
+            val workspaces = listOfNotNull(repository.currentUid?.let(::WorkspaceRef)) + WorkspaceRef()
+            val fallback = workspaces.filter { workspace ->
+                actual.none { it.ref.workspace == workspace && it.role == "OWNER" && it.name == TaskDefaults.UNCATEGORIZED }
+            }.map { WorkspaceCategory(CategoryRef(it, ""), TaskDefaults.UNCATEGORIZED, "OWNER") }
+            categoryNames = (fallback + actual).sortedBy { if (it.name == TaskDefaults.UNCATEGORIZED) 0 else 1 }
+            val preferred = categoryNames.firstOrNull { it.ref.workspace.uid == account && it.ref.id == selectedId }
+                ?: categoryNames.firstOrNull { it.ref.workspace.uid == account && it.role == "OWNER" && it.name == TaskDefaults.UNCATEGORIZED }
+            // A category that lost write access cannot silently redirect a save.
+            if (!selectedId.isNullOrEmpty() && categoryNames.none { it.ref.workspace.uid == account && it.ref.id == selectedId }) {
+                android.widget.Toast.makeText(this, "Danh mục không còn quyền chỉnh sửa.", android.widget.Toast.LENGTH_SHORT).show()
+                finish()
+                return@categories
             }
+            category = preferred ?: categoryNames.first()
+            binding.categories.adapter = adapter(categoryNames.map { it.label })
+            binding.categories.setSelection(categoryNames.indexOf(category))
+            optionsLoaded = true
+            binding.save.isEnabled = !saving()
         }
         binding.close.setOnClickListener { if (!saving()) finish() }
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
@@ -83,8 +103,11 @@ class AddTaskActivity : WorkspaceActivity() {
                 binding.taskTitle.requestFocus()
                 return@setOnClickListener
             }
-            model.save(GuestTaskRepository.get(this), binding.taskTitle.text.toString(),
-                binding.description.text.toString(), category, priority, dueAt, reminderMinutes, repeatType)
+            if (!optionsLoaded) return@setOnClickListener
+            model.save { saved ->
+                repository.create(binding.taskTitle.text.toString(), binding.description.text.toString(), category,
+                    priority, dueAt, reminderMinutes, repeatType, saved)
+            }
         }
         renderChoices()
         lifecycleScope.launch {
@@ -94,7 +117,7 @@ class AddTaskActivity : WorkspaceActivity() {
                         setResult(RESULT_OK); finish()
                     } else {
                         val busy = state == AddTaskViewModel.SaveState.SAVING
-                        binding.save.isEnabled = !busy
+                        binding.save.isEnabled = !busy && optionsLoaded
                         binding.close.isEnabled = !busy
                         binding.taskTitle.isEnabled = !busy
                         binding.description.isEnabled = !busy
@@ -112,7 +135,8 @@ class AddTaskActivity : WorkspaceActivity() {
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
-        outState.putString("category", category)
+        outState.putString("category", category.ref.id)
+        outState.putString("categoryUid", category.ref.workspace.uid)
         outState.putInt("priority", priority)
         outState.putString("repeatType", repeatType)
         outState.putLong("dueAt", dueAt)
@@ -151,12 +175,12 @@ class AddTaskActivity : WorkspaceActivity() {
     }
 
     private fun setupDropdowns() {
-        binding.categories.adapter = adapter(categoryNames)
+        binding.categories.adapter = adapter(categoryNames.map { it.label })
         binding.categories.setSelection(categoryNames.indexOf(category))
         binding.categories.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
             override fun onNothingSelected(parent: AdapterView<*>?) = Unit
             override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
-                category = categoryNames[position]
+                categoryNames.getOrNull(position)?.let { category = it }
             }
         }
         binding.repeats.adapter = adapter(listOf("Không", "Hằng ngày", "Hằng tuần", "Hằng tháng"))

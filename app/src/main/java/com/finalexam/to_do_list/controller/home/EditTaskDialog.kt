@@ -20,7 +20,7 @@ import androidx.lifecycle.LifecycleEventObserver
 import com.finalexam.to_do_list.R
 import com.finalexam.to_do_list.databinding.ActivityAddTaskBinding
 import com.finalexam.to_do_list.model.local.relation.HomeTask
-import com.finalexam.to_do_list.model.repository.GuestTaskRepository
+import com.finalexam.to_do_list.model.repository.UnifiedTaskRepository
 import com.finalexam.to_do_list.util.TaskDefaults
 import com.finalexam.to_do_list.util.TaskDetailText
 import java.time.Instant
@@ -30,7 +30,7 @@ import java.util.Calendar
 
 /** Uses the exact add form layout inside a floating, scrollable dialog. */
 internal object EditTaskDialog {
-    fun show(activity: ComponentActivity, task: HomeTask, repository: GuestTaskRepository,
+    fun show(activity: ComponentActivity, task: HomeTask, repository: UnifiedTaskRepository,
              onDelete: (AlertDialog) -> Unit, onSaved: () -> Unit) {
         val form = ActivityAddTaskBinding.inflate(activity.layoutInflater)
         val dialog = AlertDialog.Builder(activity).create()
@@ -89,14 +89,18 @@ internal object EditTaskDialog {
             override fun onNothingSelected(parent: AdapterView<*>?) = Unit
             override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) { category = categories[position] }
         }
-        repository.categories { result ->
+        if (task.workspaceUid != null) {
+            categories = listOf(task.category)
+            form.categories.adapter = adapter(categories)
+        } else repository.categories { result ->
             result.onSuccess { names ->
                 if (!dialog.isShowing || names.isEmpty()) return@onSuccess
-                categories = (names + task.category).distinct()
+                categories = (names.filter { it.ref.workspace.uid == null }.map { it.name } + task.category).distinct()
                 form.categories.adapter = adapter(categories)
                 form.categories.setSelection(categories.indexOf(category))
             }
         }
+        form.categories.isEnabled = task.workspaceUid == null
         form.repeats.adapter = adapter(listOf("Không", "Hằng ngày", "Hằng tuần", "Hằng tháng"))
         form.repeats.setSelection(initialRepeat)
         form.repeats.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
@@ -157,7 +161,7 @@ internal object EditTaskDialog {
                     }
                 }
             }
-            repository.updateTask(task.id, form.taskTitle.text.toString(), form.description.text.toString(),
+            repository.updateTask(task, form.taskTitle.text.toString(), form.description.text.toString(),
                 category, priority, dueAt, if (reminderChanged) reminderMinutes else null,
                 reminderChanged, repeatType, callback)
         }

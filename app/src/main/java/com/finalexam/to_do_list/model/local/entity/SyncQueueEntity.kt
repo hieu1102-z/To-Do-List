@@ -25,6 +25,9 @@ data class SyncQueueEntity(
     @ColumnInfo(name = "status", defaultValue = "'PENDING'") val status: String = "PENDING",
     @ColumnInfo(name = "retry_count", defaultValue = "0") val retryCount: Int = 0,
     @ColumnInfo(name = "last_error") val lastError: String? = null,
-    @ColumnInfo(name = "next_retry_at") val nextRetryAt: Long? = null
+    @ColumnInfo(name = "next_retry_at") val nextRetryAt: Long? = null,
+    @ColumnInfo(name = "predecessor_id") val predecessorId: String? = null,
+    @ColumnInfo(name = "dispatched", defaultValue = "0") val dispatched: Boolean = false,
+    @ColumnInfo(name = "membership_revision", defaultValue = "0") val membershipRevision: Long = 0
 )
 

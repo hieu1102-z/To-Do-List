@@ -1,6 +1,6 @@
 <resources>
     <string name="task_delete_heading">Xóa công việc này?</string>
-    <string name="task_delete_message">%1$s\nsẽ bị xóa. Không thể hoàn tác.</string>
+    <string name="task_delete_message">%1$s\nsẽ được chuyển vào thùng rác.</string>
     <string name="task_delete_cancel">Hủy</string>
     <string name="task_delete_confirm">Xóa</string>
     <string name="task_delete_progress">Đang xóa…</string>

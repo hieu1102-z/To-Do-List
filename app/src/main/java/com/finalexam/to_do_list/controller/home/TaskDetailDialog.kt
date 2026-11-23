@@ -20,12 +20,12 @@ import androidx.lifecycle.LifecycleEventObserver
 import com.finalexam.to_do_list.R
 import com.finalexam.to_do_list.databinding.DialogTaskDetailBinding
 import com.finalexam.to_do_list.model.local.relation.HomeTask
-import com.finalexam.to_do_list.model.repository.GuestTaskRepository
+import com.finalexam.to_do_list.model.repository.UnifiedTaskRepository
 import com.finalexam.to_do_list.util.TaskDetailText
 
 /** Figma detail content adapted to a floating window. */
 internal object TaskDetailDialog {
-    fun show(activity: ComponentActivity, task: HomeTask, repository: GuestTaskRepository,
+    fun show(activity: ComponentActivity, task: HomeTask, repository: UnifiedTaskRepository,
              onEdit: () -> Unit, onDelete: (AlertDialog) -> Unit, onChanged: () -> Unit) {
         val binding = DialogTaskDetailBinding.inflate(activity.layoutInflater)
         val dialog = AlertDialog.Builder(activity).create()
@@ -63,7 +63,7 @@ internal object TaskDetailDialog {
             ?: activity.getString(R.string.task_detail_no_description)
 
         fun showSubtasks() {
-            repository.subtasks(task.id) { result ->
+            repository.subtasks(task) { result ->
                 if (activity.isFinishing || activity.isDestroyed) return@subtasks
                 result.fold({ items ->
                     binding.subtaskList.removeAllViews()
@@ -80,7 +80,7 @@ internal object TaskDetailDialog {
                             val input = EditText(activity).apply { setSingleLine(true); setText(subtask.title); setSelection(text.length); filters = arrayOf(android.text.InputFilter.LengthFilter(200)) }
                             AlertDialog.Builder(activity).setTitle("Sửa công việc con").setView(input)
                                 .setNegativeButton("Hủy", null).setPositiveButton("Lưu") { _, _ ->
-                                    repository.updateSubtask(subtask.id, input.text.toString(), subtask.isDone) { changed ->
+                                    repository.changeSubtask(task, subtask, input.text.toString(), subtask.isDone) { changed ->
                                         if (changed.isSuccess) showSubtasks() else binding.error.apply { visibility = View.VISIBLE; text = "Không thể sửa công việc con." }
                                     }
                                 }.show()
@@ -90,7 +90,7 @@ internal object TaskDetailDialog {
                             contentDescription = if (subtask.isDone) "Bỏ hoàn thành ${subtask.title}" else "Hoàn thành ${subtask.title}"
                             setOnCheckedChangeListener { _, checked ->
                                 isEnabled = false
-                                repository.updateSubtask(subtask.id, subtask.title, checked) { changed ->
+                                repository.changeSubtask(task, subtask, subtask.title, checked) { changed ->
                                     if (changed.isFailure) binding.error.apply { visibility = View.VISIBLE; text = "Không thể cập nhật công việc con." }
                                     else showSubtasks()
                                 }
@@ -109,12 +109,15 @@ internal object TaskDetailDialog {
                                 AlertDialog.Builder(activity).setMessage("Xóa công việc con này?")
                                     .setNegativeButton("Hủy", null)
                                     .setPositiveButton("Xóa") { _, _ ->
-                                        repository.deleteSubtask(subtask.id) { deleted ->
+                                        repository.changeSubtask(task, subtask, null, subtask.isDone) { deleted ->
                                             if (deleted.isSuccess) showSubtasks() else binding.error.apply { visibility = View.VISIBLE; text = "Không thể xóa công việc con." }
                                         }
                                     }.show()
                             }
                         })
+                        if (!task.canEdit) {
+                            for (index in 0 until row.childCount) row.getChildAt(index).isEnabled = false
+                        }
                         binding.subtaskList.addView(row, LinearLayout.LayoutParams(-1, -2))
                     }
                 }, { binding.error.apply { visibility = View.VISIBLE; text = "Không thể tải công việc con." } })
@@ -124,7 +127,7 @@ internal object TaskDetailDialog {
             val input = EditText(activity).apply { hint = "Tên công việc con"; setSingleLine(true); filters = arrayOf(android.text.InputFilter.LengthFilter(200)) }
             AlertDialog.Builder(activity).setTitle("Thêm công việc con").setView(input)
                 .setNegativeButton("Hủy", null).setPositiveButton("Thêm") { _, _ ->
-                    repository.addSubtask(task.id, input.text.toString()) { added ->
+                    repository.addSubtask(task, input.text.toString()) { added ->
                         if (added.isSuccess) showSubtasks() else binding.error.apply { visibility = View.VISIBLE; text = added.exceptionOrNull()?.message ?: "Không thể thêm công việc con." }
                     }
                 }.show()
@@ -138,6 +141,20 @@ internal object TaskDetailDialog {
                 info.className = "android.widget.Button"
             }
         }
+        if (!task.canEdit) {
+            binding.edit.visibility = View.GONE
+            binding.delete.visibility = View.GONE
+            binding.addSubtask.visibility = View.GONE
+            binding.complete.visibility = View.GONE
+        } else if (task.workspaceUid != null) {
+            binding.participant.setOnClickListener {
+                repository.participant(task) { result ->
+                    if (result.isSuccess) { dialog.dismiss(); onChanged() }
+                    else { binding.error.visibility = View.VISIBLE; binding.error.text = "Không thể cập nhật người nhận." }
+                }
+            }
+            binding.participant.append("\nChạm để tự nhận hoặc rút")
+        }
         binding.close.setOnClickListener { dialog.dismiss() }
         binding.edit.setOnClickListener { dialog.dismiss(); onEdit() }
         binding.delete.setOnClickListener { onDelete(dialog) }
@@ -147,7 +164,7 @@ internal object TaskDetailDialog {
             binding.edit.isEnabled = false; binding.delete.isEnabled = false
             dialog.setCancelable(false); dialog.setCanceledOnTouchOutside(false)
             binding.close.isEnabled = false
-            repository.toggle(task.id) { result ->
+            repository.toggle(task) { result ->
                 if (activity.isFinishing || activity.isDestroyed) return@toggle
                 if (result.isSuccess) { dialog.dismiss(); onChanged() }
                 else if (dialog.isShowing) {

@@ -5,5 +5,10 @@ data class TrashTask(
     val title: String,
     val category: String,
     val deletedAt: Long,
-    val categoryId: String
+    val categoryId: String,
+    val workspaceUid: String? = null,
+    val role: String = "OWNER",
+    val entityType: String = "TASK",
+    val parentId: String? = null,
+    val revision: Long = 0
 )

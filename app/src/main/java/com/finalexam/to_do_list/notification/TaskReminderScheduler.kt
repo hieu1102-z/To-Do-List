@@ -8,77 +8,43 @@ import android.net.Uri
 import android.os.Build
 
 object TaskReminderScheduler {
-
-    private fun pendingIntent(
-        context: Context,
-        taskId: String,
-        title: String
-    ): PendingIntent {
-        val intent = Intent(context, TaskReminderReceiver::class.java).apply {
-            putExtra("task_id", taskId)
+    private fun intent(context: Context, id: String, title: String, uid: String?, at: Long): PendingIntent {
+        val broadcast = Intent(context, TaskReminderReceiver::class.java).apply {
+            putExtra("task_id", id)
             putExtra("task_title", title)
-            data = Uri.parse("todolist://reminder/$taskId")
+            putExtra("account_uid", uid)
+            putExtra("scheduled_at", at)
+            data = if (uid == null) Uri.parse("todolist://reminder/$id") else
+                Uri.Builder().scheme("todolist").authority("reminder").appendPath(uid).appendPath(id).build()
         }
-
-        return PendingIntent.getBroadcast(
-            context,
-            0,
-            intent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        )
+        return PendingIntent.getBroadcast(context, 0, broadcast,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
     }
 
-    fun canScheduleExactAlarms(context: Context): Boolean {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            val alarmManager =
-                context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
+    private fun manager(context: Context) = context.getSystemService(AlarmManager::class.java)
+    fun canScheduleExactAlarms(context: Context) =
+        Build.VERSION.SDK_INT < Build.VERSION_CODES.S || manager(context).canScheduleExactAlarms()
 
-            return alarmManager.canScheduleExactAlarms()
-        }
-
-        return true
-    }
-
-    fun schedule(
-        context: Context,
-        taskId: String,
-        title: String,
-        remindAt: Long
-    ): Boolean {
-        val alarmManager =
-            context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
-
+    fun schedule(context: Context, taskId: String, title: String, remindAt: Long, uid: String? = null): Boolean {
         if (remindAt <= System.currentTimeMillis()) {
-            cancel(context, taskId, title)
+            cancel(context, taskId, title, uid)
             return false
         }
-
-        if (!canScheduleExactAlarms(context)) {
-            return false
+        val alarm = manager(context)
+        val operation = intent(context, taskId, title, uid, remindAt)
+        return try {
+            if (canScheduleExactAlarms(context)) {
+                alarm.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, remindAt, operation)
+            } else alarm.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, remindAt, operation)
+            true
+        } catch (_: SecurityException) {
+            runCatching { alarm.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, remindAt, operation) }.isSuccess
         }
-
-        val operation = pendingIntent(context, taskId, title)
-
-        alarmManager.setExactAndAllowWhileIdle(
-            AlarmManager.RTC_WAKEUP,
-            remindAt,
-            operation
-        )
-
-        return true
     }
 
-    fun cancel(
-        context: Context,
-        taskId: String,
-        title: String
-    ) {
-        val alarmManager =
-            context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
-
-        val operation = pendingIntent(context, taskId, title)
-
-        alarmManager.cancel(operation)
+    fun cancel(context: Context, taskId: String, title: String, uid: String? = null) {
+        val operation = intent(context, taskId, title, uid, 0)
+        manager(context).cancel(operation)
         operation.cancel()
     }
 }

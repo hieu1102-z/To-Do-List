@@ -123,12 +123,32 @@ class GuestTaskRepositoryTest : DatabaseTestBase() {
         val pending = java.util.ArrayDeque<Runnable>()
         val repo = GuestTaskRepository(context, database, Executor { pending.add(it) }, { it() })
         val model = com.finalexam.to_do_list.controller.home.AddTaskViewModel()
-        repeat(2) { model.save(repo, "One task", "", "Cá nhân", 2, null, null) }
+        repeat(2) { model.save { saved -> repo.create("One task", "", "Cá nhân", 2, null, null, saved) } }
         assertEquals(1, pending.size)
         assertEquals(com.finalexam.to_do_list.controller.home.AddTaskViewModel.SaveState.SAVING, model.state.value)
         pending.remove().run()
         assertEquals(1, count("tasks"))
         assertEquals(com.finalexam.to_do_list.controller.home.AddTaskViewModel.SaveState.SAVED, model.state.value)
+    }
+
+    @Test fun restoreKeepsPreviouslyTrashedChildren() {
+        val repo = GuestTaskRepository(context, database, Executor { it.run() }, { it() })
+        task("active-task")
+        execute("INSERT INTO subtasks(id,task_id,title,client_updated_at,deleted_at) VALUES('gone','active-task','Subtask',10,11)")
+        success { repo.delete("active-task", it) }
+        success { repo.restoreTask("active-task", it) }
+        assertEquals("11", scalar("SELECT deleted_at FROM subtasks WHERE id='gone'"))
+
+        task("trashed-task")
+        execute("UPDATE tasks SET deleted_at=12 WHERE id='trashed-task'")
+        success { repo.deleteCategory("Cá nhân", callback = it) }
+        assertNull(scalar("SELECT deleted_at FROM tasks WHERE id='active-task'"))
+        var categories = emptyList<com.finalexam.to_do_list.model.local.relation.TrashTask>()
+        repo.trash { categories = it.getOrThrow() }
+        val categoryItem = categories.single { it.entityType == "CATEGORY" }
+        success { repo.changeCategoryTrash(categoryItem, false, null, it) }
+        assertEquals("12", scalar("SELECT deleted_at FROM tasks WHERE id='trashed-task'"))
+        assertEquals("11", scalar("SELECT deleted_at FROM subtasks WHERE id='gone'"))
     }
     private fun rows(repo: GuestTaskRepository): List<HomeTask> {
         var result: Result<List<HomeTask>>? = null

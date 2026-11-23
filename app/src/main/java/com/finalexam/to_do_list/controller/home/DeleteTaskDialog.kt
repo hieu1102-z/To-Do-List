@@ -12,11 +12,11 @@ import androidx.lifecycle.LifecycleEventObserver
 import com.finalexam.to_do_list.R
 import com.finalexam.to_do_list.databinding.DialogDeleteTaskBinding
 import com.finalexam.to_do_list.model.local.relation.HomeTask
-import com.finalexam.to_do_list.model.repository.GuestTaskRepository
+import com.finalexam.to_do_list.model.repository.UnifiedTaskRepository
 
 /** Confirmation UI based on the supplied reference; the selected task ID is the delete target. */
 internal object DeleteTaskDialog {
-    fun show(activity: ComponentActivity, task: HomeTask, repository: GuestTaskRepository, onDeleted: () -> Unit) {
+    fun show(activity: ComponentActivity, task: HomeTask, repository: UnifiedTaskRepository, onDeleted: () -> Unit) {
         val binding = DialogDeleteTaskBinding.inflate(activity.layoutInflater)
         val dialog = AlertDialog.Builder(activity).create()
         dialog.setView(binding.root, 0, 0, 0, 0)
@@ -35,7 +35,7 @@ internal object DeleteTaskDialog {
             if (busy) return@setOnClickListener
             setBusy(true)
             binding.error.visibility = View.GONE
-            repository.delete(task.id) { result ->
+            repository.delete(task) { result ->
                 if (activity.isFinishing || activity.isDestroyed) return@delete
                 if (result.isSuccess) { dialog.dismiss(); onDeleted() }
                 else if (dialog.isShowing) { setBusy(false); binding.error.visibility = View.VISIBLE }

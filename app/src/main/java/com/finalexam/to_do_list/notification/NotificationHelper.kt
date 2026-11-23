@@ -39,7 +39,8 @@ object NotificationHelper {
     fun show(
         context: Context,
         taskId: String,
-        taskTitle: String
+        taskTitle: String,
+        uid: String? = null
     ) {
         if (
             Build.VERSION.SDK_INT >= 33 &&
@@ -66,6 +67,7 @@ object NotificationHelper {
             .build()
 
         NotificationManagerCompat.from(context).notify(
+            uid,
             taskId.hashCode(),
             notification
         )

@@ -1,9 +1,19 @@
 import groovy.json.JsonSlurper
+import java.net.URI
 
 plugins {
     alias(libs.plugins.ksp)
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.compose)
+}
+
+val workspaceApiBaseUrl = providers.gradleProperty("WORKSPACE_API_BASE_URL").orElse("").get().trim().trimEnd('/')
+if (workspaceApiBaseUrl.isNotEmpty()) {
+    val uri = URI(workspaceApiBaseUrl)
+    require(uri.scheme == "https" && uri.host != null && uri.rawUserInfo == null &&
+        uri.rawQuery == null && uri.rawFragment == null && uri.path.isEmpty()) {
+        "WORKSPACE_API_BASE_URL must be an HTTPS origin, e.g. https://todolist-api.onrender.com"
+    }
 }
 
 android {
@@ -18,6 +28,7 @@ android {
         targetSdk = 37
         versionCode = 1
         versionName = "1.0"
+        buildConfigField("String", "WORKSPACE_API_BASE_URL", "\"$workspaceApiBaseUrl\"")
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -38,14 +49,15 @@ android {
         compose = true
         viewBinding = true
         resValues = true
+        buildConfig = true
     }
     testOptions {
         unitTests.isIncludeAndroidResources = true
         unitTests.all {
             it.maxHeapSize = "1536m"
             it.maxParallelForks = 1
-            it.systemProperty("dbml.path", rootProject.file("../docs/TodoList_DB_v2.dbml").absolutePath)
-            it.inputs.file(rootProject.file("../docs/TodoList_DB_v2.dbml"))
+            it.systemProperty("dbml.path", project.file("src/test/fixtures/TodoList_DB_v2.dbml").absolutePath)
+            it.inputs.file(project.file("src/test/fixtures/TodoList_DB_v2.dbml"))
         }
     }
 }
@@ -81,6 +93,9 @@ dependencies {
     testImplementation("org.robolectric:robolectric:4.17")
     testImplementation("androidx.test:core:1.7.0")
     implementation("com.google.firebase:firebase-auth:24.0.1")
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
+    implementation("com.google.firebase:firebase-firestore:26.6.0")
+    implementation("androidx.work:work-runtime-ktx:2.11.0")
     implementation(platform(libs.androidx.compose.bom))
     implementation(libs.androidx.activity.compose)
     implementation(libs.androidx.compose.material3)

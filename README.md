@@ -1,10 +1,36 @@
 # Cấu trúc dự án To Do List
 
+## Đồng bộ và chia sẻ
+
+Trang chủ hiển thị task Local cạnh task tài khoản. Biểu tượng và nhãn cho biết task đang ở thiết bị, đang chờ, đã đồng bộ, gặp lỗi hoặc xung đột. Task mới mặc định vào “to do” của tài khoản khi đã đăng nhập. Từ danh mục Local, chọn **Sao chép lên tài khoản để chia sẻ** và xác nhận trước khi đưa dữ liệu lên Firebase.
+
+Trong **Chia sẻ & thành viên**, OWNER mời theo email và chọn quyền. Người nhận vào **Cá nhân → Lời mời danh mục** bằng email đã xác minh. EDITOR có thể xóa vào thùng rác và khôi phục. Chỉ OWNER được xóa vĩnh viễn. EDITOR và VIEWER có thể chọn **Rời danh mục**. Đồng bộ thay đổi offline cần phiên đúng tài khoản và kết nối trở lại.
+
+Cấu hình lặp của task tài khoản được lưu và đồng bộ. Việc tự sinh kỳ tiếp theo hiện có trong không gian Local.
+
+Backend Node.js, kiểm thử Firebase và cấu hình Rules/indexes thuộc repo BE riêng. Firestore `(default)` vẫn ở `asia-east1`. Android gọi API tại `https://todolist-be-zeg3.onrender.com` theo `WORKSPACE_API_BASE_URL` trong `gradle.properties` ở gốc repo App.
+
+Để phát triển chức năng đăng nhập, đồng bộ và chia sẻ, đặt `google-services.json` của Firebase project `to-do-list-d22e9` tại `app/google-services.json`, rồi Sync Gradle trong Android Studio hoặc build từ gốc repo App. Lần build thông thường tự lấy URL chung của nhóm.
+
+~~~powershell
+.\gradlew.bat :app:assembleDebug
+~~~
+
+URL là địa chỉ HTTPS gốc. Android tự thêm `/v1/workspace`. Khi cần thử một BE khác, truyền `-PWORKSPACE_API_BASE_URL=https://<may-chu-khac>` vào lệnh Gradle. Có thể truyền `-PWORKSPACE_API_BASE_URL=` để thử bản build chỉ dùng Local.
+
+Chạy kiểm thử Android bằng Gradle.
+
+~~~powershell
+.\gradlew.bat :app:assembleDebug :app:testDebugUnitTest :app:lintDebug
+~~~
+
+Các lệnh Android chỉ chạy kiểm thử code và dữ liệu. Fixture DBML của kiểm thử Room nằm trong `app/src/test/fixtures`, nên không cần checkout BE hoặc thư mục tài liệu chung để build và kiểm thử.
+
 ## Cửa sổ sửa công việc
 
 `EditTaskDialog` tái sử dụng cùng XML của form thêm công việc: ô tiêu đề/mô tả, ngày hạn và nhắc nhở cạnh nhau, chip ưu tiên, dropdown danh mục/lặp lại, nút Lưu thay đổi. Giữ dạng cửa sổ nổi và cuộn nội dung. Điền dữ liệu hiện có, giữ UUID và trạng thái hoàn thành. Thay đổi nhắc nhở/lịch lặp được lưu qua repository; nếu không đổi nhắc nhở thì giữ nguyên khoảng nhắc đã lưu.
 
-`DeleteTaskDialog` theo ảnh tham chiếu người dùng cung cấp: cửa sổ trắng bo góc, tiêu đề “Xóa công việc này?”, tên công việc thật và dòng “sẽ bị xóa. Không thể hoàn tác.”, nút Hủy nền nhạt và nút Xóa màu đỏ. Tên dài xuống dòng/cuộn, không dùng tên mẫu trong ảnh. Chỉ nút Xóa gọi repository bằng ID công việc; khóa nút khi đang xử lý, lỗi giữ cửa sổ để thử lại. Hủy/Back/chạm ngoài trước khi xác nhận không thay đổi dữ liệu. Chỉ đóng cửa sổ cha và tải lại danh sách sau khi xóa thành công. Không mở Activity hoặc emulator trong kiểm thử.
+`DeleteTaskDialog` theo ảnh tham chiếu người dùng cung cấp: cửa sổ trắng bo góc, tiêu đề “Xóa công việc này?”, tên công việc thật và dòng “sẽ bị xóa. Không thể hoàn tác.”, nút Hủy nền nhạt và nút Xóa màu đỏ. Tên dài xuống dòng/cuộn, không dùng tên mẫu trong ảnh. Xác nhận xóa đưa task vào thùng rác. Chỉ nút Xóa gọi repository bằng ID công việc; khóa nút khi đang xử lý, lỗi giữ cửa sổ để thử lại. Hủy/Back/chạm ngoài trước khi xác nhận không thay đổi dữ liệu. Chỉ đóng cửa sổ cha và tải lại danh sách sau khi xóa thành công. Không mở Activity hoặc emulator trong kiểm thử.
 
 ## Cửa sổ chi tiết công việc
 
@@ -32,8 +58,6 @@ Cấu trúc thư mục được dựng theo mục 5 và 5.1 của `../docs/Tuan_
 - Cấu hình Firebase: đặt `google-services.json` tại `app/google-services.json`, đúng package `com.finalexam.to_do_list`, và bật Email/Password trong Firebase Authentication. Gradle đọc cấu hình nếu tệp tồn tại; tệp này được bỏ qua bởi Git. Không có cấu hình thì offline vẫn hoạt động và đăng nhập báo chưa sẵn sàng.
 - Kiểm tra code và cơ sở dữ liệu: `gradlew.bat :app:assembleDebug :app:testDebugUnitTest :app:lintDebug --max-workers=2`. Database test chạy bằng JUnit/Robolectric với SQLite native trên JVM, không khởi tạo Activity hoặc mở emulator. Người dùng tự kiểm tra giao diện.
 
-Build APK debug hiện thành công. Test JVM đã biên dịch, nhưng Gradle chưa chạy được vì cấu hình test tham chiếu `../docs/TodoList_DB_v2.dbml` không có trong workspace hiện tại. Chưa thử đăng nhập bằng tài khoản Firebase thật hoặc kiểm thử giao diện trên thiết bị.
-
 ## Chức năng đã triển khai
 
 - Trang chủ: ngày hiện tại, tiến độ thực tế, Hôm nay / 7 ngày tới / Quá hạn / Đã xong, tìm kiếm, chọn ngày và lọc danh mục.
@@ -43,39 +67,35 @@ Build APK debug hiện thành công. Test JVM đã biên dịch, nhưng Gradle c
 - Lịch, tìm kiếm/lọc/sắp xếp, hồ sơ cục bộ và trang thông báo riêng truy vấn dữ liệu lưu trên thiết bị.
 - Đăng nhập email/mật khẩu bằng Firebase Authentication, hiện/ẩn mật khẩu, kiểm tra dữ liệu, trạng thái tải/lỗi, đặt lại mật khẩu qua email, đăng xuất và quay lại dùng offline. SDK quản lý phiên, ứng dụng không lưu mật khẩu.
 - Đăng ký với họ tên, email, mật khẩu và xác nhận mật khẩu; gửi/gửi lại email xác minh và tải lại trạng thái xác minh từ Firebase.
-- Trang chủ và các thao tác offline không bị chặn bởi đăng nhập. Điểm vào chia sẻ tại Danh mục hoặc Cá nhân yêu cầu đăng nhập. Chưa triển khai backend hay thao tác chia sẻ thực tế.
+- Trang chủ và các thao tác offline không bị chặn bởi đăng nhập. Điểm vào chia sẻ tại Danh mục hoặc Cá nhân yêu cầu đăng nhập.
 
 ## Đăng nhập email và hồ sơ tài khoản
 
 - Bật Firebase Console → Authentication → Sign-in method → Email/Password. Có thể tạo tài khoản ngay từ nút Đăng ký trong màn hình đăng nhập, hoặc đăng nhập bằng tài khoản đã tồn tại. [Hướng dẫn SDK](https://firebase.google.com/docs/auth/android/password-auth).
 - `FirebaseEmailAuthGateway` chỉ làm việc với Firebase Authentication; `AuthRepository` điều phối xác thực, lưu hồ sơ và hủy yêu cầu. Không lưu mật khẩu hoặc token trong Room, SavedState hay log. Firebase SDK quản lý phiên đăng nhập.
-- Chỉ báo đăng nhập thành công sau khi Firebase xác thực và hồ sơ được cache vào bảng `users`. DB hồ sơ riêng có tên `account-<SHA-256 của UID>.db`, dùng cùng schema 10 bảng v2 nhưng không bootstrap UID khách. Cập nhật hồ sơ bằng Upsert, không dùng REPLACE để tránh xóa user đang có khóa ngoại. `server_updated_at` chỉ giữ mốc máy chủ đã có, không giả lập bằng giờ thiết bị.
+- Chỉ báo đăng nhập thành công sau khi Firebase xác thực và hồ sơ được cache vào bảng `users`. DB hồ sơ riêng có tên `account-<SHA-256 của UID>.db`, dùng schema Room v4 nhưng không bootstrap UID khách. Cập nhật hồ sơ bằng Upsert, không dùng REPLACE để tránh xóa user đang có khóa ngoại. `server_updated_at` chỉ giữ mốc máy chủ đã có, không giả lập bằng giờ thiết bị.
 - Hồ sơ cache gồm UID, email, email_key chuẩn hóa, họ tên, ảnh và trạng thái xác minh email do Firebase SDK cung cấp. Cờ xác minh cache phục vụ hiển thị, không thay thế việc backend kiểm tra token khi nhận lời mời.
 - ViewModel giữ trạng thái yêu cầu qua thay đổi cấu hình, chặn gửi lặp; Back/Tiếp tục offline hủy việc hoàn tất luồng đăng nhập. Nếu Firebase trả kết quả trễ sau khi hủy/đăng xuất, không phục hồi phiên đã hủy. Lỗi ghi hồ sơ không báo thành công và đăng xuất phiên vừa xác thực.
 - Khi ứng dụng tiếp tục chạy, có thể cache lại danh tính mà SDK đã khôi phục mà không yêu cầu nhập mật khẩu hay chặn trang chủ bằng mạng. Đăng xuất xóa phiên Firebase, giữ cache cục bộ và toàn bộ dữ liệu khách.
-- Trang chủ hiện vẫn là không gian offline cũ sau đăng nhập. Không tự đổi `local:<uuid>` trong task/category/membership sang Firebase UID; không nhập hoặc tải dữ liệu khách lên cloud. DB tài khoản mới chỉ cache hồ sơ, chưa có backend chia sẻ/đồng bộ hoặc bootstrap tài khoản trên máy chủ.
+- Trang chủ hiển thị dữ liệu của cả hai không gian. Chỉ sao chép danh mục Local đã được người dùng xác nhận.
 - Kiểm thử chỉ chạy code/JVM với gateway giả lập và SQLite native: thành công/thất bại, validation, lỗi mạng/cấu hình, yêu cầu lặp, hủy/đăng xuất trong lúc xử lý, khôi phục phiên, profile Upsert và cách ly dữ liệu khách. Không gửi yêu cầu đăng nhập hoặc email đặt lại mật khẩu đến project thật trong test; không mở emulator/Activity. Chưa xác nhận đăng nhập bằng tài khoản thật.
-
-Kết quả bổ sung chức năng đăng nhập: 35/35 test JVM vượt qua (19 test dữ liệu hiện có và 16 test đăng nhập/hồ sơ), `assembleDebug` thành công và `lintDebug` không có lỗi; vẫn còn cảnh báo lint. APK thử nghiệm tại `app/build/outputs/apk/debug/app-debug.apk`.
 
 ## Đăng ký và xác minh email
 
 - Đường vào: Cá nhân → Đăng nhập → Chưa có tài khoản? Đăng ký. Biểu mẫu yêu cầu họ tên không trống, email hợp lệ, mật khẩu ít nhất 6 ký tự và xác nhận trùng khớp. Chính sách mật khẩu chặt hơn do Firebase Console cấu hình vẫn được SDK kiểm tra; không cắt khoảng trắng của mật khẩu.
 - Tạo tài khoản qua `createUserWithEmailAndPassword`, cập nhật displayName qua `updateProfile`, cache hồ sơ theo Firebase UID và gọi `sendEmailVerification`. Chỉ Firebase xác thực/mang mật khẩu; không thêm cột mật khẩu vào Room và không tự viết dữ liệu nghiệp vụ lên Firestore.
 - Tạo tài khoản thành công giữ phiên Firebase để dùng chức năng cá nhân, không ép xác minh mới được dùng offline. Màn hình kết quả hiển thị email, nút Tôi đã xác minh, Gửi lại email xác minh và Về trang chủ. Tài khoản chưa xác minh có thể mở lại màn hình này từ Cá nhân → Xác minh email.
-- Khi kiểm tra hoặc quay lại màn hình xác minh, SDK gọi `reload()` rồi `getIdToken(true)` trước khi cache trạng thái mới. Backend chia sẻ/lời mời về sau vẫn phải kiểm tra email đã xác minh từ token, không tin cờ cache.
+- Khi kiểm tra hoặc quay lại màn hình xác minh, SDK gọi `reload()` rồi `getIdToken(true)` trước khi cache trạng thái mới. Backend chia sẻ/lời mời kiểm tra email đã xác minh từ token, không tin cờ cache.
 - Gửi lại email có thời gian chờ 60 giây theo UID trong tiến trình ứng dụng và tôn trọng lỗi hạn mức của Firebase. Không tạo lại tài khoản khi gửi email hoặc cập nhật họ tên thất bại; kết quả vẫn nói rõ tài khoản đã được tạo và hiển thị phần chưa thành công. Nếu cache hồ sơ thất bại sau tạo tài khoản, ứng dụng báo quay lại đăng nhập thay vì đăng ký lại.
 - Back/Tiếp tục offline trong lúc tạo hủy việc nhận kết quả/phiên của yêu cầu đó. Việc hủy không xóa tài khoản đã được Firebase tạo; không tự động chạy thao tác xóa tài khoản. Mật khẩu không được lưu trong ViewModel hoặc SavedState và được xóa khỏi biểu mẫu khi hoàn tất/rời màn hình.
-- Đăng ký không đổi UID của task khách, không nhập dữ liệu khách vào tài khoản và không kích hoạt đồng bộ. DB tài khoản vẫn là cache hồ sơ; bootstrap danh sách Cá nhân trên máy chủ và backend chia sẻ chưa triển khai.
+- Đăng ký không đổi UID của task khách. WorkManager đồng bộ dữ liệu tài khoản sau khi có phiên và kết nối.
 - Kiểm thử chỉ dùng gateway giả và SQLite native trên JVM, không tạo tài khoản/gửi email thật, không khởi tạo Activity hoặc emulator. Phần đăng ký bổ sung kiểm tra validation, email trùng, lỗi mạng, kết quả tạo một phần, gửi lại/cooldown, reload, hủy/đăng xuất và bảo toàn task khách. Thư viện Fragment kéo gián tiếp được ràng buộc tối thiểu 1.8.9 để tương thích Activity Result API.
-
-Các test đăng ký/xác minh được viết cho gateway giả; cần khôi phục tệp DBML đầu vào của Gradle để chạy lại toàn bộ test suite sau các thay đổi mới.
 
 ## Schema và dữ liệu khách
 
-`AppDatabase` version 3 dùng 10 Entity Kotlin theo `TodoList_DB_v2.dbml`, bổ sung `deleted_at` cho các bản ghi hỗ trợ xóa mềm. Room 2.8.4 sinh mã qua KSP2. DB khách có tên `guest-workspace.db`, dùng schema chuẩn; `GuestTaskRepository` xử lý dữ liệu trên luồng nền. Migration 2 → 3 thêm cột xóa mềm nếu chưa có.
+`AppDatabase` version 4 dùng 10 Entity Kotlin theo `TodoList_DB_v2.dbml`, bổ sung `deleted_at` cho các bản ghi hỗ trợ xóa mềm. Room 2.8.4 sinh mã qua KSP2. DB khách có tên `guest-workspace.db`, dùng schema chuẩn; `GuestTaskRepository` xử lý dữ liệu trên luồng nền. Migration 2 → 3 thêm cột xóa mềm nếu chưa có. Migration 3 → 4 thêm phụ thuộc outbox và bảng ghi lần sao chép.
 
-10 bảng: `users`, `categories`, `category_members`, `category_invitations`, `tasks`, `task_participants`, `subtasks`, `task_reminders`, `sync_queue`, `sync_state`. Tên cột, kiểu SQLite, NULL/default, PK/FK và index theo DBML. UID/UUID là String; thời gian và phiên bản là Long; Boolean lưu thành INTEGER 0/1.
+10 bảng nghiệp vụ và đồng bộ: `users`, `categories`, `category_members`, `category_invitations`, `tasks`, `task_participants`, `subtasks`, `task_reminders`, `sync_queue`, `sync_state`. Ngoài ra, `local_category_copies` ghi nhận các lần sao chép đã xác nhận. Tên cột, kiểu SQLite, NULL/default, PK/FK và index theo DBML. UID/UUID là String; thời gian và phiên bản là Long; Boolean lưu thành INTEGER 0/1.
 
 DB khách có một UID ổn định dạng `local:<uuid>`, email/email_key rỗng, tên Khách và email chưa xác minh. UID này chỉ là định danh cục bộ trong DB khách, không phải tài khoản Firebase. Bốn danh mục mặc định có UUID và membership ACTIVE/OWNER tương ứng. Đây là ngoại lệ định danh đã được thống nhất và ghi trong ghi chú `users.uid` của DBML.
 
@@ -87,12 +107,12 @@ Room chưa mô hình hóa đầy đủ các CHECK và WHERE index trong Entity. 
 
 Các partial index `uq_category_owner_name`, `uq_one_active_owner` và `uq_pending_invite` được cài trong `onOpen`, sau bước Room xác thực schema, trước khi bootstrap/đọc ghi ứng dụng. Chúng loại trừ bản ghi đã xóa mềm khi áp dụng duy nhất tên danh mục. Migration gọi `removePartialIndexesForMigration` trước khi thay đổi schema; callback cài lại chúng sau đó. Schema JSON trong `app/schemas` mô tả phần Room quản lý; DDL trong `SchemaSql` bổ sung CHECK và partial index.
 
-- Công việc khách chỉ thuộc không gian trên thiết bị, không tạo Firebase user và không gửi UID cục bộ hoặc dữ liệu khách lên mạng. Khi xóa vĩnh viễn, một tombstone được ghi vào `sync_queue` cục bộ; chưa có worker/backend gửi hoặc nhận thao tác đồng bộ.
-- Đăng nhập/đăng xuất giữ nguyên dữ liệu offline. Chưa tự chuyển chủ sở hữu, nhập hoặc đồng bộ công việc khách vào tài khoản. Khi bổ sung chia sẻ cần thiết kế bước chuyển rõ ràng, giữ UUID và xác nhận của người dùng.
+- Công việc khách chỉ thuộc không gian trên thiết bị, không tạo Firebase user và không gửi UID cục bộ hoặc dữ liệu khách lên mạng. Hàng đợi khách không được gửi lên máy chủ.
+- Đăng nhập/đăng xuất giữ dữ liệu Local. Bản sao trong tài khoản có UUID riêng, còn bản gốc ở thiết bị.
 - Công việc chưa đặt hạn hiển thị ở Hôm nay. 7 ngày tới gồm hôm nay đến hết ngày thứ sáu tiếp theo theo múi giờ thiết bị. Quá hạn so sánh thời điểm hạn với thời gian hiện tại, bao gồm việc trễ giờ ngay trong hôm nay.
 - Chức năng tài khoản/chia sẻ trực tuyến sau này tiếp tục dùng UID/UUID, phân quyền và giao thức trong docs. Đăng nhập chỉ là điều kiện cần; backend vẫn phải kiểm tra quyền và email xác minh khi nhận lời mời.
 
-Firebase hiện chỉ xử lý đăng ký/đăng nhập và hồ sơ xác thực. Tác vụ, danh mục, công việc con, nhắc nhở và thông báo được lưu cục bộ bằng Room/SQLite. Đồng bộ đa thiết bị và chia sẻ/backend chưa triển khai; tombstone mới chỉ nằm trong hàng đợi SQLite, chưa tới máy chủ hoặc thiết bị khác.
+Room lưu dữ liệu hiển thị và hàng đợi thay đổi. Cloud Functions kiểm tra quyền và ghi Firestore. Khi nhận ACK hoặc snapshot đầy đủ, ứng dụng cập nhật bản sao trong Room.
 
 ## Cây thư mục theo tài liệu
 
@@ -128,8 +148,6 @@ App/
 │       ├── drawable/
 │       ├── values/
 │       └── menu/
-└── functions/
-    └── src/
 ```
 
 Cây trên thể hiện các thư mục theo tài liệu; các tệp và thư mục có sẵn trong dự án vẫn được giữ nguyên.
@@ -142,7 +160,7 @@ Cây trên thể hiện các thư mục theo tài liệu; các tệp và thư m�
 | `model/local/entity` | Các Entity tương ứng 10 bảng trong DBML v2. |
 | `model/local/relation` | Quan hệ dữ liệu Room, ví dụ `TaskWithDetails`. |
 | `model/local` | `AppDatabase`. |
-| `model/remote` | Adapter Firebase Authentication; chưa tích hợp Firestore hoặc Cloud Functions. |
+| `model/remote` | Adapter Firebase Authentication. Luồng tài khoản gọi API HTTPS qua WorkspaceRemote. |
 | `model/repository` | Truy cập Room, quy tắc nghiệp vụ cục bộ và điều phối xác thực. |
 | `controller` | Activity/Fragment điều khiển các màn hình theo từng nhóm chức năng. |
 | `controller/sharing` | Chia sẻ danh sách, thành viên và lời mời trong ứng dụng. |
@@ -155,12 +173,11 @@ Cây trên thể hiện các thư mục theo tài liệu; các tệp và thư m�
 | `res/drawable` | Tài nguyên hình ảnh và drawable. |
 | `res/values` | Chuỗi, màu và theme. |
 | `res/menu` | Tài nguyên menu. |
-| `functions/src` | Backend callable: `index.ts`, `mutations.ts`, `invitations.ts`, `authorization.ts`. |
 
 ## Ánh xạ vào dự án hiện có
 
 - Tài liệu dùng package minh họa `com.example.todolist`; dự án hiện có dùng namespace/applicationId `com.finalexam.to_do_list`. Cấu trúc được đặt dưới package hiện có.
-- `functions/src` nằm tại gốc `App`, ngoài module Android, đúng như tài liệu. `firestore.rules` dự kiến nằm tại gốc `App` khi triển khai backend; hiện chưa tạo.
+- Backend triển khai từ repo BE. Bản Cloud Functions trước đây được giữ trong workspace để đối chiếu khi xác nhận chuyển đổi.
 - Hai màn hình mới dùng XML và ViewBinding. Các thư viện Compose và `ui/theme` từ dự án khởi tạo vẫn được giữ cho các màn hình về sau; `MainActivity` hiện mở `HomeActivity`.
 - Danh sách công việc được dựng từ dữ liệu Room vào vùng cuộn; RecyclerView có thể bổ sung khi triển khai danh sách lớn/phân trang.
 - Mẫu Figma có đăng nhập Google và nhãn email/tên đăng nhập; bản triển khai theo yêu cầu docs chỉ xác thực email/mật khẩu, thay lựa chọn Google bằng “Tiếp tục dùng offline”.

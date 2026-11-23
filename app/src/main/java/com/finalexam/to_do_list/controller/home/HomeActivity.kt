@@ -26,7 +26,11 @@ import com.finalexam.to_do_list.controller.auth.RegisterActivity
 import com.finalexam.to_do_list.databinding.ActivityHomeBinding
 import com.finalexam.to_do_list.model.local.relation.HomeTask
 import com.finalexam.to_do_list.model.repository.AuthRepository
-import com.finalexam.to_do_list.model.repository.GuestTaskRepository
+import com.finalexam.to_do_list.model.repository.*
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.repeatOnLifecycle
+import kotlinx.coroutines.launch
 import com.finalexam.to_do_list.model.repository.GuestProfilePreferences
 import com.finalexam.to_do_list.util.TaskFilter
 import com.finalexam.to_do_list.util.TaskDefaults
@@ -54,11 +58,15 @@ import com.finalexam.to_do_list.notification.TaskReminderReceiver
 
 open class HomeActivity : WorkspaceActivity() {
     private lateinit var binding: ActivityHomeBinding
-    private lateinit var repository: GuestTaskRepository
+    private lateinit var repository: UnifiedTaskRepository
     private lateinit var auth: AuthRepository
     private var tasks = emptyList<HomeTask>()
     private var filter = TaskFilter.TODAY
-    private var category: String? = null
+    private var category: CategoryRef? = null
+    private var categoryLabel: String? = null
+    private var categoryWritable = true
+    private var sourceFilter = 0
+    private val sharing by lazy { SharingDialogs(this, repository) }
     private var selectedDate: LocalDate? = null
     private var selectedNavigation = 0
     private var calendarRefresh: (() -> Unit)? = null
@@ -143,14 +151,28 @@ open class HomeActivity : WorkspaceActivity() {
         binding = ActivityHomeBinding.inflate(layoutInflater)
         setContentView(binding.root)
         applyInsets(binding.root)
-        repository = GuestTaskRepository.get(this)
+        repository = UnifiedTaskRepository.get(this)
         auth = AuthRepository.get(this)
 
         NotificationHelper.createChannel(this)
         requestNotificationPermission()
 
         filter = TaskFilter.entries.getOrElse(savedInstanceState?.getInt("filter") ?: 0) { TaskFilter.TODAY }
-        category = savedInstanceState?.getString("category")
+        category = savedInstanceState?.getString("category")?.let {
+            CategoryRef(WorkspaceRef(savedInstanceState.getString("categoryUid")), it)
+        }
+        categoryLabel = savedInstanceState?.getString("categoryLabel")
+        categoryWritable = savedInstanceState?.getBoolean("categoryWritable", true) ?: true
+        sourceFilter = savedInstanceState?.getInt("taskSource", 0) ?: 0
+        lifecycleScope.launch {
+            repeatOnLifecycle(Lifecycle.State.STARTED) {
+                WorkspaceSync.changes.collect {
+                    repository.watch()
+                    refreshTasks()
+                    if (selectedNavigation == 2 && !categoryFormOpen) selectCategory()
+                }
+            }
+        }
         selectedDate = savedInstanceState?.getString("selectedDate")?.let(LocalDate::parse)
         selectedNavigation = savedInstanceState?.getInt("navigation") ?: 0
         binding.addTask.setOnClickListener { editTask(null) }
@@ -187,6 +209,7 @@ open class HomeActivity : WorkspaceActivity() {
         if (::repository.isInitialized) {
             updateNotificationBadge()
             auth.refreshProfile()
+            repository.start()
             reload()
         }
     }
@@ -207,12 +230,17 @@ open class HomeActivity : WorkspaceActivity() {
             unregisterReceiver(reminderEventReceiver)
             reminderEventReceiverRegistered = false
         }
+        WorkspaceSync.unwatch()
         super.onStop()
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
         outState.putInt("filter", filter.ordinal)
-        outState.putString("category", category)
+        outState.putString("category", category?.id)
+        outState.putString("categoryUid", category?.workspace?.uid)
+        outState.putString("categoryLabel", categoryLabel)
+        outState.putBoolean("categoryWritable", categoryWritable)
+        outState.putInt("taskSource", sourceFilter)
         outState.putString("selectedDate", selectedDate?.toString())
         outState.putInt("navigation", selectedNavigation)
         super.onSaveInstanceState(outState)
@@ -272,14 +300,34 @@ open class HomeActivity : WorkspaceActivity() {
             }
             binding.filters.addView(button, LinearLayout.LayoutParams(0, -1, 1f))
         }
+        binding.addTask.visibility = if (category != null && !categoryWritable) View.GONE else View.VISIBLE
+        if (repository.currentUid != null && category == null) {
+            val source = TextView(this).apply {
+                text = listOf("Tất cả nguồn", "Local", "Tài khoản")[sourceFilter]
+                textSize = 11f
+                gravity = Gravity.CENTER
+                setTextColor(brand)
+                setOnClickListener {
+                    AlertDialog.Builder(this@HomeActivity).setTitle("Nguồn công việc")
+                        .setSingleChoiceItems(arrayOf("Tất cả", "Local", "Tài khoản"), sourceFilter) { dialog, index ->
+                            sourceFilter = index
+                            dialog.dismiss()
+                            render()
+                        }.show()
+                }
+            }
+            binding.filters.addView(source, LinearLayout.LayoutParams(0, -1, 1f))
+        }
         val query = binding.query.text.toString().trim()
         val visible = tasks.filter { task ->
             val dateMatches = if (category != null) true else selectedDate?.let { date -> !task.done && task.dueAt?.let { Instant.ofEpochMilli(it).atZone(zone).toLocalDate() == date } == true }
                 ?: filter.includes(task.done, task.dueAt, today, zone)
-            dateMatches && (category == null || task.category == category) &&
+            dateMatches && (category == null || task.categoryRef() == category) &&
+                (category != null || sourceFilter == 0 || repository.currentUid == null ||
+                    (sourceFilter == 1 && task.workspaceUid == null) || (sourceFilter == 2 && task.workspaceUid != null)) &&
                 (query.isEmpty() || task.title.contains(query, true) || task.description.contains(query, true))
         }
-        binding.sectionTitle.text = category ?: selectedDate?.format(DateTimeFormatter.ofPattern("dd/MM/yyyy")) ?: when (filter) {
+        binding.sectionTitle.text = category?.let { categoryLabel } ?: selectedDate?.format(DateTimeFormatter.ofPattern("dd/MM/yyyy")) ?: when (filter) {
             TaskFilter.TODAY -> "Công việc hôm nay"
             TaskFilter.WEEK -> "Công việc 7 ngày tới"
             TaskFilter.OVERDUE -> "Công việc quá hạn"
@@ -305,14 +353,15 @@ open class HomeActivity : WorkspaceActivity() {
             setPadding(dp(8), dp(10), dp(14), dp(10)); background = rounded(Color.WHITE, 16, Color.rgb(232, 234, 240))
             isClickable = true; isFocusable = true
             setOnClickListener { showTaskDetail(task) }
-            setOnLongClickListener { confirmDelete(task); true }
+            setOnLongClickListener { if (task.canEdit) confirmDelete(task); task.canEdit }
         }
         val check = CheckBox(this).apply {
             isChecked = task.done
+            isEnabled = task.canEdit
             setButtonDrawable(R.drawable.task_checkbox)
             buttonTintList = null
             contentDescription = if (task.done) "Bỏ hoàn thành ${task.title}" else "Hoàn thành ${task.title}"
-            setOnClickListener { isEnabled = false; repository.toggle(task.id) { changed(it) } }
+            setOnClickListener { isEnabled = false; repository.toggle(task) { changed(it) } }
         }
         row.addView(check, LinearLayout.LayoutParams(dp(40), dp(48)))
         val content = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(0, dp(4), 0, 0) }
@@ -337,7 +386,7 @@ open class HomeActivity : WorkspaceActivity() {
             date.toLocalDate() == LocalDate.now(zone) -> "Hôm nay, " + date.format(DateTimeFormatter.ofPattern("HH:mm"))
             else -> date.format(DateTimeFormatter.ofPattern("dd/MM, HH:mm"))
         }
-        return "$due · ${task.category}"
+        return "$due · ${task.category} · ${task.sourceIcon} ${task.syncLabel}"
     }
 
     private fun buildNavigation() {
@@ -383,9 +432,9 @@ open class HomeActivity : WorkspaceActivity() {
         val line = Color.rgb(218, 222, 234)
         var statusFilter = 0 // all, open, done
         var priorityFilter = 0 // all, high, medium, low
-        var categoryFilter: String? = null
+        var categoryFilter: CategoryRef? = null
         var sortFilter = 0 // due date, priority, title
-        var categoryNames = TaskDefaults.categories
+        var categoryNames = emptyList<WorkspaceCategory>()
 
         val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setBackgroundColor(bg) }
         val scroll = ScrollView(this).apply { clipToPadding = false; isFillViewport = true }
@@ -449,9 +498,9 @@ open class HomeActivity : WorkspaceActivity() {
             filterGroups.removeAllViews()
             addChoiceGroup("Trạng thái", listOf("Tất cả", "Chưa xong", "Đã xong"), statusFilter) { statusFilter = it; renderSearch() }
             addChoiceGroup("Ưu tiên", listOf("Tất cả", "Cao", "Trung bình", "Thấp"), priorityFilter) { priorityFilter = it; renderSearch() }
-            val selectedCategoryIndex = categoryFilter?.let { categoryNames.indexOf(it) }?.takeIf { it >= 0 }?.plus(1) ?: 0
-            addChoiceGroup("Danh mục", listOf("Tất cả") + categoryNames, selectedCategoryIndex) {
-                categoryFilter = if (it == 0) null else categoryNames[it - 1]
+            val selectedCategoryIndex = categoryFilter?.let { categoryNames.indexOfFirst { item -> item.ref == it } }?.takeIf { it >= 0 }?.plus(1) ?: 0
+            addChoiceGroup("Danh mục", listOf("Tất cả") + categoryNames.map { it.label }, selectedCategoryIndex) {
+                categoryFilter = if (it == 0) null else categoryNames[it - 1].ref
                 renderSearch()
             }
             addChoiceGroup("Sắp xếp theo", listOf("Ngày hạn", "Ưu tiên", "Tên A–Z"), sortFilter) { sortFilter = it; renderSearch() }
@@ -460,7 +509,7 @@ open class HomeActivity : WorkspaceActivity() {
             val filtered = tasks.filter { task ->
                 (statusFilter == 0 || (statusFilter == 1 && !task.done) || (statusFilter == 2 && task.done)) &&
                     (priorityFilter == 0 || task.priority == 4 - priorityFilter) &&
-                    (categoryFilter == null || task.category == categoryFilter) &&
+                    (categoryFilter == null || task.categoryRef() == categoryFilter) &&
                     (needle.isEmpty() || task.title.contains(needle, true) || task.description.contains(needle, true))
             }
             val ordered = when (sortFilter) {
@@ -480,11 +529,11 @@ open class HomeActivity : WorkspaceActivity() {
                     setOnClickListener { showTaskDetail(task) }
                 }
                 val check = CheckBox(this).apply {
-                    isChecked = task.done; setButtonDrawable(R.drawable.task_checkbox); buttonTintList = null
+                    isChecked = task.done; isEnabled = task.canEdit; setButtonDrawable(R.drawable.task_checkbox); buttonTintList = null
                     contentDescription = if (task.done) "Bỏ hoàn thành ${task.title}" else "Hoàn thành ${task.title}"
                     setOnClickListener {
                         isEnabled = false
-                        repository.toggle(task.id) { result ->
+                        repository.toggle(task) { result ->
                             if (result.isFailure) toast("Không thể cập nhật công việc.")
                             refreshTasks()
                         }
@@ -494,7 +543,7 @@ open class HomeActivity : WorkspaceActivity() {
                 val details = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(4), dp(2), 0, 0) }
                 details.addView(label(task.title, 15f, ink, true))
                 val dueLabel = task.dueAt?.let { Instant.ofEpochMilli(it).atZone(zone).format(DateTimeFormatter.ofPattern("dd/MM, HH:mm")) } ?: "Không có hạn"
-                details.addView(label("$dueLabel · ${task.category}", 12f, if (overdue) Color.rgb(205, 72, 85) else muted).apply { setPadding(0, dp(9), 0, dp(8)) })
+                details.addView(label("$dueLabel · ${task.category} · ${task.sourceIcon} ${task.syncLabel}", 12f, if (overdue) Color.rgb(205, 72, 85) else muted).apply { setPadding(0, dp(9), 0, dp(8)) })
                 val badges = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
                 val badgeFill = when (task.priority) { 3 -> Color.rgb(252, 233, 236); 1 -> Color.rgb(231, 244, 237); else -> Color.rgb(255, 243, 220) }
                 val badgeText = when (task.priority) { 3 -> Color.rgb(190, 66, 82); 1 -> Color.rgb(57, 133, 99); else -> Color.rgb(157, 111, 35) }
@@ -613,11 +662,11 @@ open class HomeActivity : WorkspaceActivity() {
                         setOnClickListener { showTaskDetail(task) }
                     }
                     val check = CheckBox(this).apply {
-                        isChecked = task.done; setButtonDrawable(R.drawable.task_checkbox); buttonTintList = null
+                        isChecked = task.done; isEnabled = task.canEdit; setButtonDrawable(R.drawable.task_checkbox); buttonTintList = null
                         contentDescription = if (task.done) "Bỏ hoàn thành ${task.title}" else "Hoàn thành ${task.title}"
                         setOnClickListener {
                             isEnabled = false
-                            repository.toggle(task.id) { result ->
+                            repository.toggle(task) { result ->
                                 if (result.isFailure) toast("Không thể cập nhật công việc.")
                                 repository.load { loaded ->
                                     loaded.onSuccess { tasks = it; render(); renderCalendar() }
@@ -660,7 +709,7 @@ open class HomeActivity : WorkspaceActivity() {
         }
     }
 
-    private fun showCategoryScreen(names: List<String>) {
+    private fun showCategoryScreen(names: List<WorkspaceCategory>) {
         val bg = Color.rgb(246, 247, 251); val white = Color.WHITE
         val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setBackgroundColor(bg) }
         val scroll = ScrollView(this)
@@ -677,12 +726,13 @@ open class HomeActivity : WorkspaceActivity() {
             setPadding(0, dp(24), 0, dp(26))
         })
         val grid = android.widget.GridLayout(this).apply { columnCount = 2; useDefaultMargins = false }
-        names.forEachIndexed { index, name ->
+        names.forEachIndexed { index, item ->
+            val name = item.name
             val card = LinearLayout(this).apply {
                 orientation = LinearLayout.VERTICAL; background = rounded(white, 18, Color.rgb(218, 222, 234))
                 setPadding(dp(16), dp(16), dp(12), dp(16)); isClickable = true; isFocusable = true
-                setOnClickListener { category = name; selectedDate = null; selectedNavigation = 0; setContentView(binding.root); render() }
-                setOnLongClickListener { showCategoryActions(name); true }
+                setOnClickListener { category = item.ref; categoryLabel = item.label; categoryWritable = item.role != "VIEWER"; selectedDate = null; selectedNavigation = 0; setContentView(binding.root); render() }
+                setOnLongClickListener { showCategoryActions(item); true }
             }
             val iconRow = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL }
             val icon = TextView(this).apply {
@@ -693,11 +743,16 @@ open class HomeActivity : WorkspaceActivity() {
             iconRow.addView(TextView(this).apply {
                 text = "⋮"; textSize = 22f; gravity = Gravity.CENTER; setTextColor(muted)
                 contentDescription = "Tùy chọn danh mục $name"
-                isClickable = true; setOnClickListener { showCategoryActions(name) }
+                isClickable = true; setOnClickListener { showCategoryActions(item) }
             }, LinearLayout.LayoutParams(dp(30), dp(42)))
             card.addView(iconRow)
-            card.addView(label(name, 16f, ink, true).apply { setPadding(0, dp(16), 0, dp(5)) })
-            card.addView(label("${tasks.count { it.category == name }} công việc", 13f, muted))
+            val title = if (item.ref.workspace.uid != null && item.role != "OWNER") "$name · " + item.owner else name
+            card.addView(label(title, 16f, ink, true).apply {
+                maxLines = 2
+                ellipsize = android.text.TextUtils.TruncateAt.END
+                setPadding(0, dp(16), 0, dp(5))
+            })
+            card.addView(label("${tasks.count { it.categoryRef() == item.ref }} công việc · " + if (item.ref.workspace.uid == null) "Local" else item.role, 12f, muted))
             val lp = android.widget.GridLayout.LayoutParams().apply {
                 width = 0; height = dp(142); columnSpec = android.widget.GridLayout.spec(index % 2, 1f)
                 setMargins(if (index % 2 == 0) 0 else dp(7), dp(0), if (index % 2 == 0) dp(7) else 0, dp(8))
@@ -722,18 +777,33 @@ open class HomeActivity : WorkspaceActivity() {
         setContentView(root)
     }
 
-    private fun showCategoryActions(name: String) {
-        AlertDialog.Builder(this)
-            .setTitle(name)
-            .setItems(arrayOf("Đổi tên", "Xóa danh mục")) { _, which ->
-                if (which == 0) renameCategoryDialog(name) else confirmDeleteCategory(name)
-            }
-            .setNegativeButton("Đóng", null)
-            .show()
+    private fun HomeTask.categoryRef() = CategoryRef(WorkspaceRef(workspaceUid), categoryId)
+
+    private fun HomeTask.reminderKey(): String {
+        val ref = TaskRef(WorkspaceRef(workspaceUid), id)
+        return ref.workspace.uid?.let { "$it/" + ref.id } ?: ref.id
     }
 
-    private fun renameCategoryDialog(oldName: String) {
-        val input = EditText(this).apply { setSingleLine(true); setText(oldName); setSelection(text.length); filters = arrayOf(InputFilter.LengthFilter(100)) }
+    private fun showCategoryActions(item: WorkspaceCategory) {
+        val actions = linkedMapOf<String, () -> Unit>()
+        if (item.role == "OWNER") {
+            actions["Đổi tên"] = { renameCategoryDialog(item) }
+            actions["Xóa danh mục"] = { confirmDeleteCategory(item) }
+        }
+        if (item.ref.workspace.uid == null) {
+            actions["Sao chép lên tài khoản để chia sẻ"] = {
+                if (auth.user == null) requireSharingAccount() else sharing.copy(item, ::refreshTasks)
+            }
+        } else {
+            actions[if (item.role == "OWNER") "Chia sẻ & thành viên" else "Thành viên"] = { sharing.members(item, ::refreshTasks) }
+        }
+        AlertDialog.Builder(this).setTitle(item.label)
+            .setItems(actions.keys.toTypedArray()) { _, index -> actions.values.elementAt(index)() }
+            .setNegativeButton("Đóng", null).show()
+    }
+
+    private fun renameCategoryDialog(item: WorkspaceCategory) {
+        val input = EditText(this).apply { setSingleLine(true); setText(item.name); setSelection(text.length); filters = arrayOf(InputFilter.LengthFilter(100)) }
         AlertDialog.Builder(this)
             .setTitle("Đổi tên danh mục")
             .setView(input)
@@ -742,7 +812,7 @@ open class HomeActivity : WorkspaceActivity() {
             .create().also { dialog ->
                 dialog.setOnShowListener {
                     dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
-                        repository.renameCategory(oldName, input.text.toString()) { result ->
+                        repository.renameCategory(item, input.text.toString()) { result ->
                             if (isFinishing || isDestroyed) return@renameCategory
                             result.fold({
                                 dialog.dismiss()
@@ -756,16 +826,16 @@ open class HomeActivity : WorkspaceActivity() {
             }
     }
 
-    private fun confirmDeleteCategory(name: String) {
+    private fun confirmDeleteCategory(item: WorkspaceCategory) {
         AlertDialog.Builder(this)
             .setTitle("Xóa danh mục")
             .setMessage("Danh mục và các công việc bên trong sẽ được chuyển vào thùng rác. Bạn có thể tiếp tục dùng các danh mục còn lại.")
             .setNegativeButton("Hủy", null)
             .setPositiveButton("Xóa") { _, _ ->
-                repository.deleteCategory(name) { result ->
+                repository.deleteCategory(item) { result ->
                     if (isFinishing || isDestroyed) return@deleteCategory
                     result.fold({
-                        if (category == name) category = null
+                        if (category == item.ref) category = null
                         refreshTasks()
                         repository.categories { categories -> categories.onSuccess { showCategoryScreen(it) } }
                     }, { error -> toast(error.message ?: "Không thể xóa danh mục") })
@@ -788,12 +858,19 @@ open class HomeActivity : WorkspaceActivity() {
         val input = EditText(this).apply { setSingleLine(true); hint = "Ví dụ: Sức khỏe"; textSize = 16f; setPadding(dp(14), dp(12), dp(14), dp(12)); background = rounded(Color.WHITE, 14, Color.rgb(214, 219, 231)); filters = arrayOf(InputFilter.LengthFilter(100)) }
         root.addView(input, LinearLayout.LayoutParams(-1, dp(56)).apply { topMargin = dp(8) })
         root.addView(label("Ví dụ: Sức khỏe, Du lịch, Dự án cá nhân", 12f, muted).apply { setPadding(0, dp(8), 0, dp(30)) })
+        val source = android.widget.Switch(this).apply {
+            text = "Lưu vào tài khoản"
+            isChecked = repository.currentUid != null
+            visibility = if (repository.currentUid == null) View.GONE else View.VISIBLE
+        }
+        val accountUid = repository.currentUid
+        root.addView(source)
         val save = Button(this)
         save.apply { text = "Lưu danh mục"; isAllCaps = false; setTextColor(Color.WHITE); background = rounded(brand, 14); setOnClickListener {
             val name = input.text.toString().trim()
             if (name.isEmpty()) { input.error = "Nhập tên danh mục"; return@setOnClickListener }
             isEnabled = false
-            repository.createCategory(name) { result ->
+            repository.createCategory(name, WorkspaceRef(accountUid.takeIf { source.isChecked })) { result ->
                 if (isFinishing || isDestroyed) return@createCategory
                 result.onSuccess {
                     categoryFormOpen = false
@@ -827,7 +904,7 @@ open class HomeActivity : WorkspaceActivity() {
         val dialog = AlertDialog.Builder(this).setTitle(if (signedIn) auth.user?.email else "Bạn đang dùng chế độ khách")
             .setMessage("Công việc trong không gian offline được lưu trên thiết bị. Đăng nhập không tự tải dữ liệu này lên mạng.")
             .setPositiveButton(if (signedIn) "Đăng xuất" else "Đăng nhập") { _, _ ->
-                if (signedIn) { auth.signOut(); render(); toast("Đã đăng xuất. Công việc offline vẫn được giữ.") }
+                if (signedIn) { signOutWorkspace() }
                 else startActivity(Intent(this, LoginActivity::class.java))
             }.setNeutralButton("Chia sẻ danh sách") { _, _ -> requireSharingAccount() }
             .setNegativeButton("Đóng", null)
@@ -845,16 +922,26 @@ open class HomeActivity : WorkspaceActivity() {
     }
 
     private fun requireSharingAccount() {
+        if (!WorkspaceSync.configured) return sharing.showBackendUnavailable()
         if (auth.user == null) {
             AlertDialog.Builder(this).setTitle("Đăng nhập để chia sẻ")
                 .setMessage("Bạn cần tài khoản để chia sẻ danh sách. Các chức năng offline vẫn dùng được mà không cần đăng nhập.")
                 .setPositiveButton("Đăng nhập") { _, _ -> startActivity(Intent(this, LoginActivity::class.java)) }
                 .setNegativeButton("Tiếp tục offline", null).show()
         } else {
-            AlertDialog.Builder(this).setTitle("Không gian offline")
-                .setMessage("Bạn đã đăng nhập. Chia sẻ danh sách và chuyển dữ liệu từ thiết bị lên tài khoản sẽ được bổ sung khi triển khai backend chia sẻ.")
-                .setPositiveButton("Đã hiểu", null).show()
+            AlertDialog.Builder(this).setTitle("Chia sẻ danh mục")
+                .setItems(arrayOf("Danh mục", "Lời mời danh mục", "Vấn đề đồng bộ")) { _, index ->
+                    when (index) { 0 -> selectCategory(); 1 -> sharing.invitations(); 2 -> sharing.conflicts(::refreshTasks) }
+                }.show()
         }
+    }
+
+    private fun signOutWorkspace() {
+        auth.signOut()
+        tasks = tasks.filter { it.workspaceUid == null }
+        sourceFilter = 0
+        showHomeScreen()
+        reload()
     }
 
     private fun showTaskDetail(task: HomeTask) {
@@ -866,14 +953,20 @@ open class HomeActivity : WorkspaceActivity() {
 
     private fun editTask(task: HomeTask?) {
         if (task == null) {
-            startActivity(Intent(this, AddTaskActivity::class.java))
+            val target = category
+            if (target != null && !categoryWritable) return
+            startActivity(Intent(this, AddTaskActivity::class.java).apply {
+                target?.let { putExtra("categoryId", it.id); putExtra("categoryUid", it.workspace.uid) }
+            })
             return
         }
+        if (!task.canEdit) return
         EditTaskDialog.show(this, task, repository,
             onDelete = { dialog -> confirmDelete(task) { dialog.dismiss() } },
             onSaved = { refreshTasks() })
     }
     private fun confirmDelete(task: HomeTask, onDeleted: () -> Unit = {}) {
+        if (!task.canEdit) return
         DeleteTaskDialog.show(this, task, repository) {
             onDeleted()
             refreshTasks()
@@ -1054,14 +1147,17 @@ open class HomeActivity : WorkspaceActivity() {
                     .setMessage(message)
                     .setNegativeButton("Hủy", null)
                     .setPositiveButton("Xóa") { _, _ ->
-                        NotificationPreferences.dismissReminders(this, ids)
-                        ids.forEach { NotificationManagerCompat.from(this).cancel(it.hashCode()) }
-                        repository.removeReminders(ids) { result ->
-                            result.onFailure { toast("Không thể hủy một số lịch nhắc.") }
+                        val selected = tasks.filter { it.reminderKey() in ids }
+                        repository.removeReminders(selected) { result ->
+                            result.onSuccess {
+                                NotificationPreferences.dismissReminders(this, selected.map { it.reminderKey() }.toSet())
+                                selected.forEach { NotificationManagerCompat.from(this).cancel(it.workspaceUid, it.id.hashCode()) }
+                                selectedReminderIds.removeAll(ids)
+                                selectionMode = false
+                                refreshTasks()
+                                refreshReminder?.invoke()
+                            }.onFailure { toast("Không thể hủy một số lịch nhắc.") }
                         }
-                        selectedReminderIds.removeAll(ids)
-                        selectionMode = false
-                        refreshReminder?.invoke()
                     }
                     .show()
             }
@@ -1077,20 +1173,21 @@ open class HomeActivity : WorkspaceActivity() {
                 isClickable = true
                 isFocusable = true
                 setOnClickListener {
-                    if (selectionMode) toggleReminderSelection(task.id) else showTaskDetail(task)
+                    if (selectionMode) toggleReminderSelection(task.reminderKey()) else showTaskDetail(task)
                 }
                 setOnLongClickListener {
                     selectionMode = true
-                    selectedReminderIds.add(task.id)
+                    selectedReminderIds.add(task.reminderKey())
                     refreshReminder?.invoke()
                     true
                 }
-                if (task.id in selectedReminderIds) background = rounded(Color.rgb(235, 239, 255), 20, brand)
+                if (task.reminderKey() in selectedReminderIds) background = rounded(Color.rgb(235, 239, 255), 20, brand)
             }
 
             // Nút hoàn thành hình tròn
             val check = CheckBox(this).apply {
-                isChecked = if (selectionMode) task.id in selectedReminderIds else task.done
+                isChecked = if (selectionMode) task.reminderKey() in selectedReminderIds else task.done
+                isEnabled = selectionMode || task.canEdit
                 if (!selectionMode) setButtonDrawable(R.drawable.task_checkbox)
                 else buttonTintList = ColorStateList.valueOf(brand)
                 if (!selectionMode) buttonTintList = null
@@ -1104,12 +1201,12 @@ open class HomeActivity : WorkspaceActivity() {
 
                 setOnClickListener {
                     if (selectionMode) {
-                        toggleReminderSelection(task.id)
+                        toggleReminderSelection(task.reminderKey())
                         return@setOnClickListener
                     }
                     isEnabled = false
 
-                    repository.toggle(task.id) { result ->
+                    repository.toggle(task) { result ->
                         if (isFinishing || isDestroyed) return@toggle
 
                         if (result.isFailure) {
@@ -1220,13 +1317,13 @@ open class HomeActivity : WorkspaceActivity() {
             val dismissed = NotificationPreferences.dismissedReminders(this)
             val overdueTasks = tasks
                 .filter {
-                    !it.done && it.dueAt != null && it.dueAt < now && it.id !in dismissed
+                    !it.done && it.dueAt != null && it.dueAt < now && it.reminderKey() !in dismissed
                 }
                 .sortedBy { it.dueAt }
 
             val upcomingTasks = tasks
                 .filter {
-                    !it.done && it.id !in dismissed &&
+                    !it.done && it.reminderKey() !in dismissed &&
                             it.dueAt != null &&
                             it.dueAt >= now &&
                             Instant.ofEpochMilli(it.dueAt)
@@ -1235,7 +1332,7 @@ open class HomeActivity : WorkspaceActivity() {
                 }
                 .sortedBy { it.dueAt }
 
-            visibleReminderIds = (overdueTasks + upcomingTasks).map { it.id }.toSet()
+            visibleReminderIds = (overdueTasks + upcomingTasks).map { it.reminderKey() }.toSet()
             selectedReminderIds.retainAll(visibleReminderIds)
             updateSelectionActions()
 
@@ -1454,8 +1551,7 @@ open class HomeActivity : WorkspaceActivity() {
                 if (!trashPageOpen || isFinishing || isDestroyed) return@trash
                 content.removeAllViews()
                 result.fold({ deleted ->
-                    clear.isEnabled = deleted.isNotEmpty()
-                    clear.alpha = if (deleted.isEmpty()) 0.45f else 1f
+                    clear.visibility = if (deleted.any { it.role == "OWNER" }) View.VISIBLE else View.GONE
                     if (deleted.isEmpty()) {
                         content.addView(TextView(this).apply {
                             text = "Thùng rác đang trống"; textSize = 15f; setTextColor(muted); gravity = Gravity.CENTER
@@ -1485,17 +1581,27 @@ open class HomeActivity : WorkspaceActivity() {
                                 text = "Khôi phục"; textSize = 13f; setTextColor(brand); gravity = Gravity.CENTER
                                 setPadding(dp(12), dp(8), dp(12), dp(8)); isClickable = true; isFocusable = true
                                 setOnClickListener {
-                                    repository.restoreTask(item.id) { restored ->
+                                    val restoreItem: (String?) -> Unit = { name -> repository.trashAction(item, false, name) { restored ->
                                         restored.onSuccess {
                                             trashPageOpen = false
                                             selectedNavigation = 0
                                             selectedDate = null
-                                            category = item.category
+                                            category = CategoryRef(WorkspaceRef(item.workspaceUid), item.categoryId)
+                                            categoryLabel = item.category
+                                            categoryWritable = true
+                                            showHomeScreen()
                                             Toast.makeText(this@HomeActivity, "Đã khôi phục task.", Toast.LENGTH_SHORT).show()
                                             reload()
                                         }
                                             .onFailure { Toast.makeText(this@HomeActivity, it.message ?: "Không thể khôi phục task.", Toast.LENGTH_LONG).show() }
-                                    }
+                                    } }
+                                    if (item.entityType == "CATEGORY") {
+                                        val input = EditText(this@HomeActivity).apply { setText(item.title); setSingleLine() }
+                                        AlertDialog.Builder(this@HomeActivity).setTitle("Khôi phục danh mục").setView(input)
+                                            .setNegativeButton("Hủy", null).setPositiveButton("Khôi phục") { _, _ ->
+                                                restoreItem(input.text.toString())
+                                            }.show()
+                                    } else restoreItem(null)
                                 }
                             }
                             val permanentlyDelete = TextView(this).apply {
@@ -1503,10 +1609,10 @@ open class HomeActivity : WorkspaceActivity() {
                                 setPadding(dp(12), dp(8), dp(4), dp(8)); isClickable = true; isFocusable = true
                                 setOnClickListener {
                                     AlertDialog.Builder(this@HomeActivity).setTitle("Xóa vĩnh viễn task?")
-                                        .setMessage("Task sẽ bị xóa khỏi thiết bị. Dấu xóa được giữ trong hàng đợi đồng bộ để gửi lên máy chủ khi đồng bộ được triển khai.")
+                                        .setMessage("Công việc hoặc danh mục này sẽ bị xóa vĩnh viễn. Không thể hoàn tác.")
                                         .setNegativeButton("Hủy", null)
                                         .setPositiveButton("Xóa vĩnh viễn") { _, _ ->
-                                            repository.permanentlyDeleteTask(item.id) { removed ->
+                                            repository.trashAction(item, true, null) { removed ->
                                                 removed.onSuccess { Toast.makeText(this@HomeActivity, "Đã xóa vĩnh viễn task.", Toast.LENGTH_SHORT).show(); refresh() }
                                                     .onFailure { Toast.makeText(this@HomeActivity, it.message ?: "Không thể xóa task.", Toast.LENGTH_LONG).show() }
                                             }
@@ -1514,7 +1620,7 @@ open class HomeActivity : WorkspaceActivity() {
                                 }
                             }
                             actions.addView(restore)
-                            actions.addView(permanentlyDelete)
+                            if (item.role == "OWNER") actions.addView(permanentlyDelete)
                             card.addView(actions, LinearLayout.LayoutParams(-1, -2))
                             content.addView(card, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(10) })
                         }
@@ -1529,7 +1635,7 @@ open class HomeActivity : WorkspaceActivity() {
         }
         clear.setOnClickListener {
             AlertDialog.Builder(this).setTitle("Dọn sạch thùng rác?")
-                .setMessage("Tất cả task trong thùng rác sẽ bị xóa vĩnh viễn trên thiết bị.")
+                .setMessage("Các mục Local và các mục bạn sở hữu sẽ bị xóa vĩnh viễn.")
                 .setNegativeButton("Hủy", null)
                 .setPositiveButton("Dọn sạch") { _, _ ->
                     repository.permanentlyDeleteAll { result ->
@@ -1840,7 +1946,7 @@ open class HomeActivity : WorkspaceActivity() {
 
                     NotificationPreferences.setEnabled(this, enabled)
 
-                    GuestTaskRepository.get(this).setNotificationsEnabled(enabled) { result ->
+                    UnifiedTaskRepository.get(this).setNotificationsEnabled(enabled) { result ->
 
                         result.onFailure { error ->
                             Toast.makeText(
@@ -1876,6 +1982,12 @@ open class HomeActivity : WorkspaceActivity() {
         )
 
         // Đăng xuất
+        if (user != null) {
+            content.addView(card().apply {
+                addView(settingRow("✉", "Lời mời danh mục").apply { setOnClickListener { sharing.invitations() } })
+                addView(settingRow("↻", "Vấn đề đồng bộ").apply { setOnClickListener { sharing.conflicts(::refreshTasks) } })
+            })
+        }
         val logoutCard = card()
 
         logoutCard.addView(
@@ -1893,20 +2005,7 @@ open class HomeActivity : WorkspaceActivity() {
                             .setNegativeButton("Hủy", null)
                             .setPositiveButton("Đăng xuất") { _, _ ->
 
-                                // Đăng xuất tài khoản
-                                auth.signOut()
-
-                                // Chuyển về màn hình đăng nhập
-                                val intent = Intent(
-                                    this@HomeActivity,
-                                    LoginActivity::class.java
-                                ).apply {
-                                    flags = Intent.FLAG_ACTIVITY_NEW_TASK or
-                                            Intent.FLAG_ACTIVITY_CLEAR_TASK
-                                }
-
-                                startActivity(intent)
-                                finish()
+                                signOutWorkspace()
                             }
                             .show()
 

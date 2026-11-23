@@ -14,7 +14,7 @@ import java.security.MessageDigest
 @Database(entities = [UserEntity::class, CategoryEntity::class, CategoryMemberEntity::class,
     CategoryInvitationEntity::class, TaskEntity::class, TaskParticipantEntity::class,
     SubtaskEntity::class, TaskReminderEntity::class, SyncQueueEntity::class, SyncStateEntity::class],
-    version = 3, exportSchema = true)
+    version = 4, exportSchema = true)
 abstract class AppDatabase : RoomDatabase() {
     abstract fun tasks(): TaskDao
     abstract fun users(): UserDao
@@ -37,9 +37,12 @@ abstract class AppDatabase : RoomDatabase() {
 
         private fun builder(context: Context, name: String, guest: Boolean): Builder<AppDatabase> =
             Room.databaseBuilder(context.applicationContext, AppDatabase::class.java, name)
-                .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
                 .addCallback(object : Callback() {
-                    override fun onCreate(db: SupportSQLiteDatabase) { SchemaSql.replaceEmptyRoomTables(db) }
+                    override fun onCreate(db: SupportSQLiteDatabase) {
+                        SchemaSql.replaceEmptyRoomTables(db)
+                        installSyncMetadata(db)
+                    }
                     override fun onOpen(db: SupportSQLiteDatabase) {
                         // Configure the whole SQLite connection pool, including WAL readers.
                         // Room's generated PRAGMA only configures its current connection.
@@ -75,6 +78,23 @@ abstract class AppDatabase : RoomDatabase() {
                 db.query("PRAGMA foreign_key_check").use { check(!it.moveToFirst()) { "Foreign key violation during migration." } }
                 db.execSQL("DROP TABLE guest_tasks")
                 // Room validates modeled columns/FKs/indexes next. WHERE indexes are added onOpen.
+            }
+        }
+
+        private fun installSyncMetadata(db: SupportSQLiteDatabase) {
+            db.execSQL("CREATE TABLE IF NOT EXISTS local_category_copies (local_category_id TEXT PRIMARY KEY NOT NULL, account_category_id TEXT NOT NULL)")
+        }
+
+        val MIGRATION_3_4: Migration = object : Migration(3, 4) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                SchemaSql.removePartialIndexesForMigration(db)
+                val columns = db.query("PRAGMA table_info(sync_queue)").use { rows ->
+                    buildSet { while (rows.moveToNext()) add(rows.getString(1)) }
+                }
+                if ("predecessor_id" !in columns) db.execSQL("ALTER TABLE sync_queue ADD COLUMN predecessor_id TEXT")
+                if ("dispatched" !in columns) db.execSQL("ALTER TABLE sync_queue ADD COLUMN dispatched INTEGER NOT NULL DEFAULT 0")
+                if ("membership_revision" !in columns) db.execSQL("ALTER TABLE sync_queue ADD COLUMN membership_revision INTEGER NOT NULL DEFAULT 0")
+                installSyncMetadata(db)
             }
         }
 

@@ -21,7 +21,8 @@ class AuthRepository internal constructor(
     private val profiles: AccountProfileStore,
     private val executor: Executor,
     private val dispatch: (() -> Unit) -> Unit,
-    private val elapsedTime: () -> Long = { SystemClock.elapsedRealtime() }
+    private val elapsedTime: () -> Long = { SystemClock.elapsedRealtime() },
+    private val onSignOut: (String) -> Unit = {}
 ) {
     private class Attempt {
         val cancelled = AtomicBoolean(false)
@@ -34,8 +35,10 @@ class AuthRepository internal constructor(
     val configured get() = gateway.configured
     val user: AuthUser? get() = if (active.get() == null) gateway.currentUser else null
     fun signOut() {
+        val previousUid = user?.uid
         active.get()?.cancelled?.set(true)
         gateway.signOut()
+        previousUid?.let(onSignOut)
     }
 
     /** Returns cancellation for this attempt only; passwords are never stored by the repository. */
@@ -242,7 +245,8 @@ class AuthRepository internal constructor(
                 val main = Handler(Looper.getMainLooper())
                 AuthRepository(FirebaseEmailAuthGateway(app),
                     RoomAccountProfileStore { AppDatabase.accountBuilder(app, it).build() },
-                    Executors.newSingleThreadExecutor(), { action -> main.post { action() }; Unit })
+                    Executors.newSingleThreadExecutor(), { action -> main.post { action() }; Unit },
+                    onSignOut = { uid -> WorkspaceSync.signOut(app, uid) })
             }.also { instance = it }
         }
     }

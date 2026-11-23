@@ -16,5 +16,17 @@ data class HomeTask(
     val repeatType: String = "NONE",
     val remindAt: Long? = null,
     val reminderEnabled: Boolean? = null,
-    val participantNames: String? = null
-)
+    val participantNames: String? = null,
+    val revision: Long = 0,
+    val memberRole: String = "OWNER",
+    val workspaceUid: String? = null,
+    val syncLabel: String = "Local"
+) {
+    val canEdit get() = memberRole == "OWNER" || memberRole == "EDITOR"
+    val sourceIcon get() = when (syncLabel) {
+        "Local" -> "▣"
+        "Đã đồng bộ" -> "☁"
+        "Chờ đồng bộ" -> "↻"
+        else -> "⚠"
+    }
+}

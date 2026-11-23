@@ -33,28 +33,44 @@ class GuestTaskRepository internal constructor(
     fun load(callback: (Result<List<HomeTask>>) -> Unit) = execute({ dao.homeTasks(dao.guestUid()) }, callback)
     fun categories(callback: (Result<List<String>>) -> Unit) = execute({ dao.categoryNames(dao.guestUid()) }, callback)
 
-    fun renameCategory(oldName: String, newName: String, callback: (Result<Unit>) -> Unit) = execute({
+    internal fun workspaceCategories(callback: (Result<List<WorkspaceCategory>>) -> Unit) = execute({
+        database.openHelper.writableDatabase.rows(
+            "SELECT id,name FROM categories WHERE owner_uid=? AND deleted_at IS NULL ORDER BY created_at,name", dao.guestUid()
+        ).map { WorkspaceCategory(CategoryRef(WorkspaceRef(), it.string("id")), it.string("name"), "OWNER") }
+    }, callback)
+
+    internal fun exportCategory(id: String, callback: (Result<LocalCategoryCopy>) -> Unit) = execute({
+        transaction {
+            val sql = database.openHelper.writableDatabase
+            val uid = dao.guestUid()
+            val category = checkNotNull(sql.rows("SELECT * FROM categories WHERE id=? AND owner_uid=? AND deleted_at IS NULL",
+                id, uid).firstOrNull()) { "Danh mục không còn tồn tại." }
+            val tasks = sql.rows("SELECT * FROM tasks WHERE category_id=? AND deleted_at IS NULL", id)
+            val subtasks = sql.rows("SELECT s.* FROM subtasks s JOIN tasks t ON t.id=s.task_id WHERE t.category_id=? AND t.deleted_at IS NULL AND s.deleted_at IS NULL", id)
+            val reminders = sql.rows("SELECT r.* FROM task_reminders r JOIN tasks t ON t.id=r.task_id WHERE t.category_id=? AND t.deleted_at IS NULL AND r.deleted_at IS NULL AND r.user_uid=?", id, uid)
+            LocalCategoryCopy(category, tasks, subtasks.groupBy { it.string("task_id") }, reminders.associateBy { it.string("task_id") })
+        }
+    }, callback)
+
+    fun renameCategory(oldName: String, newName: String, expectedId: String? = null, callback: (Result<Unit>) -> Unit) = execute({
         val name = newName.trim()
         require(name.length in 1..100) { "Tên danh mục cần từ 1 đến 100 ký tự." }
         val uid = dao.guestUid()
         val old = requireNotNull(dao.findCategory(uid, GuestBootstrap.nameKey(oldName))) { "Danh mục không còn tồn tại." }
+        check(expectedId == null || expectedId == old.id) { "Danh mục không còn tồn tại." }
         val key = GuestBootstrap.nameKey(name)
         check(dao.findCategory(uid, key)?.id == null || dao.findCategory(uid, key)?.id == old.id) { "Danh mục này đã tồn tại." }
         transaction { dao.renameCategory(old.id, name, key, System.currentTimeMillis()) }
     }, callback)
 
-    fun deleteCategory(name: String, callback: (Result<Unit>) -> Unit) = execute({
+    fun deleteCategory(name: String, expectedId: String? = null, callback: (Result<Unit>) -> Unit) = execute({
         val uid = dao.guestUid()
         val category = requireNotNull(dao.findCategory(uid, GuestBootstrap.nameKey(name))) { "Danh mục không còn tồn tại." }
+        check(expectedId == null || expectedId == category.id) { "Danh mục không còn tồn tại." }
         check(dao.activeCategoryCount(uid) > 1) { "Cần giữ lại ít nhất một danh mục." }
         val tasks = dao.activeTasksInCategory(category.id)
         val now = System.currentTimeMillis()
         transaction {
-            tasks.forEach { task ->
-                dao.softDeleteTask(task.id, now, now)
-                dao.softDeleteSubtasks(task.id, now, now)
-                dao.softDeleteRemindersForTask(task.id, now, now)
-            }
             dao.softDeleteCategory(category.id, now, now)
         }
         tasks.forEach { TaskReminderScheduler.cancel(appContext, it.id, it.title) }
@@ -65,7 +81,67 @@ class GuestTaskRepository internal constructor(
         dao.subtasks(taskId)
     }, callback)
 
-    fun trash(callback: (Result<List<TrashTask>>) -> Unit) = execute({ dao.trashTasks() }, callback)
+    fun trash(callback: (Result<List<TrashTask>>) -> Unit) = execute({
+        val categories = dao.trashedLocalCategories(dao.guestUid())
+        val hidden = categories.map { it.id }.toSet()
+        (dao.trashTasks().filter { it.categoryId !in hidden } + categories + trashedSubtasks()).sortedByDescending { it.deletedAt }
+    }, callback)
+
+    private fun trashedSubtasks(): List<TrashTask> = database.openHelper.writableDatabase.rows("""
+        SELECT s.id,s.title,c.name,s.deleted_at,c.id AS cid,t.id AS parent
+        FROM subtasks s JOIN tasks t ON t.id=s.task_id JOIN categories c ON c.id=t.category_id
+        WHERE s.deleted_at IS NOT NULL AND t.deleted_at IS NULL AND c.deleted_at IS NULL
+    """.trimIndent()).map {
+        TrashTask(it.string("id"), it.string("title"), it.string("name"), it.long("deleted_at"),
+            it.string("cid"), entityType = "SUBTASK", parentId = it.string("parent"))
+    }
+
+    fun changeSubtaskTrash(item: TrashTask, purge: Boolean, callback: (Result<Unit>) -> Unit) = execute({
+        transaction {
+            check(trashedSubtasks().any { it.id == item.id && it.parentId == item.parentId })
+            val uid = dao.guestUid()
+            check(dao.role(item.categoryId, uid) in if (purge) listOf("OWNER") else listOf("OWNER", "EDITOR"))
+            val sql = database.openHelper.writableDatabase
+            if (purge) sql.execSQL("DELETE FROM subtasks WHERE id=?", arrayOf(item.id))
+            else sql.execSQL("UPDATE subtasks SET deleted_at=NULL,client_updated_at=? WHERE id=?",
+                arrayOf(System.currentTimeMillis(), item.id))
+        }
+    }, callback)
+
+    fun changeCategoryTrash(item: TrashTask, purge: Boolean, name: String?, callback: (Result<Unit>) -> Unit) = execute({
+        val sql = database.openHelper.writableDatabase
+        val uid = dao.guestUid()
+        transaction {
+            val category = checkNotNull(dao.trashedLocalCategories(uid).firstOrNull { it.id == item.id })
+            check(dao.role(item.id, uid) == "OWNER")
+            if (purge) {
+                sql.execSQL("DELETE FROM sync_queue WHERE category_id=?", arrayOf(item.id))
+                sql.execSQL("DELETE FROM sync_state WHERE category_id=?", arrayOf(item.id))
+                sql.execSQL("DELETE FROM categories WHERE id=?", arrayOf(item.id))
+            } else {
+                val title = normalizedName(name ?: item.title)
+                require(title.length in 1..100)
+                check(dao.categoryId(uid, GuestBootstrap.nameKey(title)) == null) { "Danh mục này đã tồn tại." }
+                val time = System.currentTimeMillis()
+                sql.execSQL("UPDATE categories SET name=?,name_key=?,deleted_at=NULL,client_updated_at=? WHERE id=?",
+                    arrayOf(title, GuestBootstrap.nameKey(title), time, item.id))
+                // Room v3 used one timestamp to mark every child when a category was trashed.
+                sql.rows("SELECT id,is_done FROM tasks WHERE category_id=? AND deleted_at=?", item.id, category.deletedAt)
+                    .forEach { task ->
+                        val id = task.string("id")
+                        dao.restoreTask(id, time)
+                        dao.restoreSubtasks(id, time, category.deletedAt)
+                        dao.restoreReminders(id, task.long("is_done") == 0L && NotificationPreferences.isEnabled(appContext),
+                            time, time, category.deletedAt)
+                    }
+            }
+        }
+        if (!purge) dao.activeTasksInCategory(item.id).filterNot { it.isDone }.forEach { task ->
+            dao.findReminder(task.id, uid)?.takeIf { it.isEnabled && NotificationPreferences.isEnabled(appContext) }?.let {
+                TaskReminderScheduler.schedule(appContext, task.id, task.title, it.remindAt)
+            }
+        }
+    }, callback)
 
     fun restoreTask(id: String, callback: (Result<Unit>) -> Unit) = execute({
         val uid = dao.guestUid()
@@ -74,10 +150,10 @@ class GuestTaskRepository internal constructor(
             val task = requireNotNull(dao.findIncludingDeleted(id)) { "Công việc không còn trong thùng rác." }
             check(task.deletedAt != null) { "Công việc này chưa bị xóa." }
             requireWrite(task.categoryId, uid)
-            dao.restoreCategory(task.categoryId, now)
+            check(dao.trashedLocalCategories(uid).none { it.id == task.categoryId }) { "Khôi phục danh mục trước." }
             dao.restoreTask(id, now)
-            dao.restoreSubtasks(id, now)
-            dao.restoreReminders(id, !task.isDone && NotificationPreferences.isEnabled(appContext), now, now)
+            dao.restoreSubtasks(id, now, task.deletedAt)
+            dao.restoreReminders(id, !task.isDone && NotificationPreferences.isEnabled(appContext), now, now, task.deletedAt)
             requireNotNull(dao.find(id))
         }
         dao.findReminder(id, uid)?.takeIf { it.isEnabled }?.let {
@@ -93,14 +169,25 @@ class GuestTaskRepository internal constructor(
 
     fun permanentlyDeleteAll(callback: (Result<Unit>) -> Unit) = execute({
         val uid = dao.guestUid()
-        val removed = transaction { dao.trashTasks().map { permanentlyDeleteInTransaction(it.id, uid) } }
+        val removed = transaction {
+            val sql = database.openHelper.writableDatabase
+            dao.trashedLocalCategories(uid).forEach {
+                sql.execSQL("DELETE FROM sync_queue WHERE category_id=?", arrayOf(it.id))
+                sql.execSQL("DELETE FROM sync_state WHERE category_id=?", arrayOf(it.id))
+                sql.execSQL("DELETE FROM categories WHERE id=?", arrayOf(it.id))
+            }
+            trashedSubtasks().filter { dao.role(it.categoryId, uid) == "OWNER" }.forEach {
+                sql.execSQL("DELETE FROM subtasks WHERE id=?", arrayOf(it.id))
+            }
+            dao.trashTasks().map { permanentlyDeleteInTransaction(it.id, uid) }
+        }
         removed.forEach { TaskReminderScheduler.cancel(appContext, it.id, it.title) }
     }, callback)
 
     private fun permanentlyDeleteInTransaction(id: String, uid: String): TaskEntity {
         val task = requireNotNull(dao.findIncludingDeleted(id)) { "Công việc không còn trong thùng rác." }
         check(task.deletedAt != null) { "Chỉ có thể xóa vĩnh viễn công việc trong thùng rác." }
-        requireWrite(task.categoryId, uid)
+        check(dao.role(task.categoryId, uid) == "OWNER") { "Chỉ chủ sở hữu được xóa vĩnh viễn." }
         val now = System.currentTimeMillis()
         dao.removeQueuedTaskOperations(task.id, task.categoryId)
         dao.enqueueSyncOperation(SyncQueueEntity(
@@ -421,8 +508,6 @@ class GuestTaskRepository internal constructor(
 
             val now = System.currentTimeMillis()
             dao.softDeleteTask(id, now, now)
-            dao.softDeleteSubtasks(id, now, now)
-            dao.softDeleteRemindersForTask(id, now, now)
 
             task
         }
@@ -448,9 +533,7 @@ class GuestTaskRepository internal constructor(
 
                 val task = dao.find(reminder.taskId)
 
-                if (task == null) {
-                    val now = System.currentTimeMillis()
-                    dao.softDeleteReminder(reminder.taskId, uid, now, now)
+                if (task == null || dao.trashedLocalCategories(uid).any { it.id == task.categoryId }) {
                     null
                 } else {
                     val shouldEnable = enabled &&
