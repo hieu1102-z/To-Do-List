@@ -50,6 +50,10 @@ abstract class AppDatabase : RoomDatabase() {
                         db.beginTransaction()
                         try {
                             SchemaSql.installPartialIndexes(db)
+                            db.execSQL("""CREATE TABLE IF NOT EXISTS local_category_transfers (
+                                category_id TEXT PRIMARY KEY NOT NULL, owner_uid TEXT NOT NULL,
+                                source_name_key TEXT NOT NULL, name TEXT NOT NULL,
+                                completed INTEGER NOT NULL DEFAULT 0 CHECK (completed IN (0,1)))""")
                             if (guest) GuestBootstrap.initialize(db)
                             db.setTransactionSuccessful()
                         } finally { db.endTransaction() }

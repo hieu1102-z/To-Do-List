@@ -33,7 +33,12 @@ internal object GuestBootstrap {
     fun initialize(db: SupportSQLiteDatabase): String {
         val uid = ensureUser(db)
         val now = System.currentTimeMillis()
-        categoryNames.forEach { ensureCategory(db, uid, it, now) }
+        // Migration 1 → 2 also uses this method before the transfer journal exists.
+        val moved = db.query("SELECT 1 FROM sqlite_master WHERE name='local_category_transfers'").use { it.moveToFirst() }
+        val movedNames = if (moved) db.query("SELECT source_name_key FROM local_category_transfers WHERE completed=1").use {
+            buildSet { while (it.moveToNext()) add(it.getString(0)) }
+        } else emptySet()
+        categoryNames.filterNot { nameKey(it) in movedNames }.forEach { ensureCategory(db, uid, it, now) }
         return uid
     }
 }

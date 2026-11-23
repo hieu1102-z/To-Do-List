@@ -162,12 +162,33 @@ class WorkspaceSyncWorker(context: Context, params: WorkerParameters) : Worker(c
         val app = WorkspaceSync.app(context) ?: return Result.success()
         val remote = WorkspaceRemote(app, uid)
         var retry = false
+        val guest = GuestCategoryTransfers(context, AppDatabase.guestBuilder(context).build())
         try {
             AccountWorkspace(uid, AppDatabase.accountBuilder(context, uid).build()).use { store ->
                 store.database.users().upsert(user.toWorkspaceProfile())
+                synchronized(categoryTransferLock) {
+                    store.commands().filter {
+                        it["status"] == "REJECTED" && it.isTransferCreateConflict() &&
+                            it.string("category_id") in store.transferIds()
+                    }.forEach { releaseTransfer(store, guest, it.string("category_id")) }
+                    guest.pending(uid).filterNot { it.id in store.transferIds() }.forEach { request ->
+                        if (!active()) return Result.success()
+                        try {
+                            val source = guest.read(request)
+                            guest.cancelLocalReminders(source)
+                            store.transferIn(source)
+                        } catch (error: IllegalStateException) {
+                            guest.release(request)
+                        }
+                    }
+                }
                 val profile = remote.call(mapOf("kind" to "PROFILE", "operation_id" to uuid()))
                 check(profile["ok"] == true)
-                val blocked = mutableSetOf<String>()
+                val transfers = store.transferIds()
+                val rejectedTransfers = store.commands().filter {
+                    it["status"] == "REJECTED" && it["category_id"] in transfers
+                }.map { it.string("category_id") }.toMutableSet()
+                val blocked = rejectedTransfers.toMutableSet()
                 for (index in 0 until 100) {
                     if (!active()) return Result.success()
                     val queue = store.commands()
@@ -199,6 +220,17 @@ class WorkspaceSyncWorker(context: Context, params: WorkerParameters) : Worker(c
                         val transient = error.isTransientWorkspaceFailure
                         store.failed(claimed, code, transient)
                         if (transient) { blocked += cid; retry = true }
+                        else if (cid in store.transferIds()) {
+                            if ((claimed + ("last_error" to code)).isTransferCreateConflict()) {
+                                synchronized(categoryTransferLock) {
+                                    releaseTransfer(store, guest, cid)
+                                }
+                            } else {
+                                // Keep the frozen source and the failed command for diagnosis.
+                                rejectedTransfers += cid
+                            }
+                            blocked += cid
+                        }
                     }
                 }
                 if (!active()) return Result.success()
@@ -207,30 +239,48 @@ class WorkspaceSyncWorker(context: Context, params: WorkerParameters) : Worker(c
                 val localIds = store.sql.rows("SELECT id FROM categories").map { it.string("id") }.toSet()
                 val creating = store.commands().filter { it["entity_type"] == "CATEGORY" && it["action"] == "CREATE" }
                     .map { it.string("category_id") }.toSet()
+                val transferIds = store.transferIds()
+                val incomplete = store.commands().map { it.string("category_id") }.toSet().intersect(transferIds)
                 // Confirm missing access with a scoped point read. A changing paginated
                 // discovery list alone is not evidence that a category was removed.
-                for (cid in (localIds - creating) + remoteIds) {
+                for (cid in ((localIds - creating) + remoteIds) - incomplete) {
                     if (!active()) return Result.success()
                     try {
                         val snapshot = remote.snapshot(cid)
                         if (!active()) return Result.success()
-                        store.apply(snapshot)
+                        if (cid in transferIds) {
+                            check(snapshot.role == "OWNER" && snapshot.category["owner_uid"] == uid)
+                            synchronized(categoryTransferLock) {
+                                store.apply(snapshot)
+                                guest.pending(uid).firstOrNull { it.id == cid }?.let(guest::complete)
+                                store.clearTransfer(cid)
+                            }
+                        } else store.apply(snapshot)
                     } catch (error: Exception) {
                         if (!active()) return Result.success()
-                        if (error.businessCode() == "PERMISSION_DENIED") store.dropCategory(cid)
+                        if (error.businessCode() == "PERMISSION_DENIED" && cid !in transferIds) store.dropCategory(cid)
                         else retry = true
                     }
                 }
                 if (active()) AccountReminders.reconcile(context, store)
-                retry = retry || store.commands().any { it["status"] != "REJECTED" }
+                retry = retry || store.commands().any { it["status"] != "REJECTED" && it["category_id"] !in rejectedTransfers }
             }
         } catch (error: Exception) {
             retry = active()
             android.util.Log.w("WorkspaceSync", "Sync incomplete: " + error.businessCode())
         } finally {
+            guest.close()
             WorkspaceSync.changed()
         }
         return if (retry && active()) Result.retry() else Result.success()
+    }
+
+    private fun Row.isTransferCreateConflict() = this["entity_type"] == "CATEGORY" && this["action"] == "CREATE" &&
+        this["last_error"] in setOf("NAME_ALREADY_EXISTS", "OBJECT_ID_REUSED")
+
+    private fun releaseTransfer(store: AccountWorkspace, guest: GuestCategoryTransfers, id: String) {
+        store.releaseRejectedTransfer(id)
+        guest.pending(store.uid).firstOrNull { it.id == id }?.let(guest::release)
     }
 
     private companion object {

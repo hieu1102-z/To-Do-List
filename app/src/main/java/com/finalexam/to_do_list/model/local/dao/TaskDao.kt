@@ -18,7 +18,7 @@ interface TaskDao {
         t.category_id AS categoryId,c.name AS category,t.due_at AS dueAt,t.priority,t.is_done AS done,
         t.completed_at AS completedAt,t.created_at AS createdAt,t.client_updated_at AS updatedAt,
         t.repeat_type AS repeatType,r.remind_at AS remindAt,r.is_enabled AS reminderEnabled,
-        t.revision AS revision, m.role AS memberRole, NULL AS workspaceUid, 'Local' AS syncLabel,
+        t.revision AS revision, m.role AS memberRole, NULL AS workspaceUid, 'Local' AS syncLabel, 0 AS transferring,
         (SELECT GROUP_CONCAT(CASE WHEN u.full_name='' THEN u.email ELSE u.full_name END, ', ')
          FROM task_participants p JOIN users u ON u.uid=p.user_uid
          JOIN category_members pm ON pm.category_id=p.category_id AND pm.user_uid=p.user_uid

@@ -251,7 +251,21 @@ Table sync_state {
 Table local_category_copies {
   local_category_id text [pk, not null]
   account_category_id text [not null]
-  Note: 'Per-account Room metadata. Links an explicit Local copy to its new cloud UUID for retry deduplication. No FK to the guest database; never uploaded.'
+  Note: 'Legacy per-account metadata for copies made before category transfer replaced copying. Never uploaded.'
+}
+
+Table local_category_transfers {
+  category_id text [pk, not null]
+  owner_uid text [not null]
+  source_name_key text [not null]
+  name text [not null]
+  completed integer [not null, default: 0]
+
+  checks {
+    `completed IN (0,1)`
+  }
+
+  Note: 'Local journal in both Room files. The guest row remains after completion to prevent reseeding a moved default category. The account row exists while the transfer is pending. Never uploaded.'
 }
 
 // Foreign keys: CASCADE physically deletes dependent rows immediately with the

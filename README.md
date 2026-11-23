@@ -2,7 +2,9 @@
 
 ## Đồng bộ và chia sẻ
 
-Trang chủ hiển thị task Local cạnh task tài khoản. Biểu tượng và nhãn cho biết task đang ở thiết bị, đang chờ, đã đồng bộ, gặp lỗi hoặc xung đột. Task mới mặc định vào “to do” của tài khoản khi đã đăng nhập. Từ danh mục Local, chọn **Sao chép lên tài khoản để chia sẻ** và xác nhận trước khi đưa dữ liệu lên Firebase.
+Trang chủ hiển thị công việc Local và công việc tài khoản. Từ menu danh mục Local, chọn **Đồng bộ qua tài khoản** và xác nhận tài khoản đích. Danh mục, công việc và công việc con giữ nguyên ID. Tài khoản đích trở thành OWNER. Nếu danh mục bị trùng tên, chọn tên khác rồi thử lại.
+
+Danh mục đang chuyển xuất hiện trong vùng tài khoản ở chế độ chỉ xem. Dữ liệu nguồn nằm trong DB khách đến khi máy chủ xác nhận các lệnh và quyền OWNER, sau đó app xóa dữ liệu nguồn. WorkManager tiếp tục khi có mạng và đúng tài khoản đăng nhập. Khi đăng xuất, danh mục ẩn như các danh mục tài khoản khác. Các bản sao tạo từ phiên bản cũ vẫn là danh mục riêng.
 
 Trong **Chia sẻ & thành viên**, OWNER mời theo email và chọn quyền. Người nhận vào **Cá nhân → Lời mời danh mục** bằng email đã xác minh. EDITOR có thể xóa vào thùng rác và khôi phục. Chỉ OWNER được xóa vĩnh viễn. EDITOR và VIEWER có thể chọn **Rời danh mục**. Đồng bộ thay đổi offline cần phiên đúng tài khoản và kết nối trở lại.
 
@@ -77,7 +79,7 @@ Cấu trúc thư mục được dựng theo mục 5 và 5.1 của `../docs/Tuan_
 - Hồ sơ cache gồm UID, email, email_key chuẩn hóa, họ tên, ảnh và trạng thái xác minh email do Firebase SDK cung cấp. Cờ xác minh cache phục vụ hiển thị, không thay thế việc backend kiểm tra token khi nhận lời mời.
 - ViewModel giữ trạng thái yêu cầu qua thay đổi cấu hình, chặn gửi lặp; Back/Tiếp tục offline hủy việc hoàn tất luồng đăng nhập. Nếu Firebase trả kết quả trễ sau khi hủy/đăng xuất, không phục hồi phiên đã hủy. Lỗi ghi hồ sơ không báo thành công và đăng xuất phiên vừa xác thực.
 - Khi ứng dụng tiếp tục chạy, có thể cache lại danh tính mà SDK đã khôi phục mà không yêu cầu nhập mật khẩu hay chặn trang chủ bằng mạng. Đăng xuất xóa phiên Firebase, giữ cache cục bộ và toàn bộ dữ liệu khách.
-- Trang chủ hiển thị dữ liệu của cả hai không gian. Chỉ sao chép danh mục Local đã được người dùng xác nhận.
+- Trang chủ hiển thị dữ liệu của cả hai không gian. Chuyển danh mục Local lên tài khoản cần xác nhận rõ tài khoản đích.
 - Kiểm thử chỉ chạy code/JVM với gateway giả lập và SQLite native: thành công/thất bại, validation, lỗi mạng/cấu hình, yêu cầu lặp, hủy/đăng xuất trong lúc xử lý, khôi phục phiên, profile Upsert và cách ly dữ liệu khách. Không gửi yêu cầu đăng nhập hoặc email đặt lại mật khẩu đến project thật trong test; không mở emulator/Activity. Chưa xác nhận đăng nhập bằng tài khoản thật.
 
 ## Đăng ký và xác minh email
@@ -95,7 +97,7 @@ Cấu trúc thư mục được dựng theo mục 5 và 5.1 của `../docs/Tuan_
 
 `AppDatabase` version 4 dùng 10 Entity Kotlin theo `TodoList_DB_v2.dbml`, bổ sung `deleted_at` cho các bản ghi hỗ trợ xóa mềm. Room 2.8.4 sinh mã qua KSP2. DB khách có tên `guest-workspace.db`, dùng schema chuẩn; `GuestTaskRepository` xử lý dữ liệu trên luồng nền. Migration 2 → 3 thêm cột xóa mềm nếu chưa có. Migration 3 → 4 thêm phụ thuộc outbox và bảng ghi lần sao chép.
 
-10 bảng nghiệp vụ và đồng bộ: `users`, `categories`, `category_members`, `category_invitations`, `tasks`, `task_participants`, `subtasks`, `task_reminders`, `sync_queue`, `sync_state`. Ngoài ra, `local_category_copies` ghi nhận các lần sao chép đã xác nhận. Tên cột, kiểu SQLite, NULL/default, PK/FK và index theo DBML. UID/UUID là String; thời gian và phiên bản là Long; Boolean lưu thành INTEGER 0/1.
+10 bảng nghiệp vụ và đồng bộ: `users`, `categories`, `category_members`, `category_invitations`, `tasks`, `task_participants`, `subtasks`, `task_reminders`, `sync_queue`, `sync_state`. `local_category_transfers` lưu trạng thái chuyển danh mục qua lần mở lại. `local_category_copies` giữ metadata của các bản sao cũ. Tên cột, kiểu SQLite, NULL/default, PK/FK và index theo DBML. UID/UUID là String; thời gian và phiên bản là Long; Boolean lưu thành INTEGER 0/1.
 
 DB khách có một UID ổn định dạng `local:<uuid>`, email/email_key rỗng, tên Khách và email chưa xác minh. UID này chỉ là định danh cục bộ trong DB khách, không phải tài khoản Firebase. Bốn danh mục mặc định có UUID và membership ACTIVE/OWNER tương ứng. Đây là ngoại lệ định danh đã được thống nhất và ghi trong ghi chú `users.uid` của DBML.
 
@@ -108,11 +110,11 @@ Room chưa mô hình hóa đầy đủ các CHECK và WHERE index trong Entity. 
 Các partial index `uq_category_owner_name`, `uq_one_active_owner` và `uq_pending_invite` được cài trong `onOpen`, sau bước Room xác thực schema, trước khi bootstrap/đọc ghi ứng dụng. Chúng loại trừ bản ghi đã xóa mềm khi áp dụng duy nhất tên danh mục. Migration gọi `removePartialIndexesForMigration` trước khi thay đổi schema; callback cài lại chúng sau đó. Schema JSON trong `app/schemas` mô tả phần Room quản lý; DDL trong `SchemaSql` bổ sung CHECK và partial index.
 
 - Công việc khách chỉ thuộc không gian trên thiết bị, không tạo Firebase user và không gửi UID cục bộ hoặc dữ liệu khách lên mạng. Hàng đợi khách không được gửi lên máy chủ.
-- Đăng nhập/đăng xuất giữ dữ liệu Local. Bản sao trong tài khoản có UUID riêng, còn bản gốc ở thiết bị.
+- Đăng nhập và đăng xuất giữ các danh mục Local chưa được chuyển qua tài khoản.
 - Công việc chưa đặt hạn hiển thị ở Hôm nay. 7 ngày tới gồm hôm nay đến hết ngày thứ sáu tiếp theo theo múi giờ thiết bị. Quá hạn so sánh thời điểm hạn với thời gian hiện tại, bao gồm việc trễ giờ ngay trong hôm nay.
 - Chức năng tài khoản/chia sẻ trực tuyến sau này tiếp tục dùng UID/UUID, phân quyền và giao thức trong docs. Đăng nhập chỉ là điều kiện cần; backend vẫn phải kiểm tra quyền và email xác minh khi nhận lời mời.
 
-Room lưu dữ liệu hiển thị và hàng đợi thay đổi. Cloud Functions kiểm tra quyền và ghi Firestore. Khi nhận ACK hoặc snapshot đầy đủ, ứng dụng cập nhật bản sao trong Room.
+Room lưu dữ liệu hiển thị và hàng đợi thay đổi. BE trên Render kiểm tra quyền và ghi Firestore. Khi nhận ACK hoặc snapshot đầy đủ, ứng dụng cập nhật cache trong Room.
 
 ## Cây thư mục theo tài liệu
 

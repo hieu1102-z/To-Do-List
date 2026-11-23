@@ -57,8 +57,10 @@ class UnifiedTaskRepository private constructor(private val context: Context) {
             val uid = currentUid
             if (uid == null || guest.isFailure) callback(guest)
             else account(uid, callback = { cloud ->
-                val rows = guest.getOrThrow()
-                callback(Result.success((rows + cloud.getOrDefault(emptyList()))
+                val accountTasks = cloud.getOrDefault(emptyList())
+                val accountCategories = accountTasks.map { it.categoryId }.toSet()
+                val rows = guest.getOrThrow().filterNot { it.categoryId in accountCategories }
+                callback(Result.success((rows + accountTasks)
                     .sortedWith(compareBy<HomeTask> { it.done }.thenBy { it.dueAt ?: Long.MAX_VALUE }.thenByDescending { it.createdAt })))
             }) { home() }
         }
@@ -69,7 +71,9 @@ class UnifiedTaskRepository private constructor(private val context: Context) {
             val uid = currentUid
             if (uid == null || guest.isFailure) callback(guest)
             else account(uid, callback = { cloud ->
-                callback(Result.success(guest.getOrThrow() + cloud.getOrDefault(emptyList())))
+                val accountCategories = cloud.getOrDefault(emptyList())
+                val accountIds = accountCategories.map { it.ref.id }.toSet()
+                callback(Result.success(guest.getOrThrow().filterNot { it.ref.id in accountIds } + accountCategories))
             }) { categories() }
         }
     }
@@ -226,7 +230,7 @@ class UnifiedTaskRepository private constructor(private val context: Context) {
             if (uid == null || result.isFailure || tasks.none { it.workspaceUid == uid }) callback(result)
             else account(uid, true, callback) {
                 tasks.filter { it.workspaceUid == uid }.forEach {
-                    check(role(it.categoryId) != null)
+                    check(role(it.categoryId) != null && it.categoryId !in transferIds())
                     editReminder(it.categoryId, it.id, null)
                 }
             }
@@ -339,24 +343,43 @@ class UnifiedTaskRepository private constructor(private val context: Context) {
         }
     }
 
-    fun copyPreview(categoryId: String, callback: (Result<Int>) -> Unit) =
-        local.exportCategory(categoryId) { callback(it.map { copy -> copy.tasks.size }) }
-
-    fun copyLocal(categoryId: String, name: String, callback: (Result<String>) -> Unit) {
-        val uid = currentUid ?: return callback(Result.failure(IllegalStateException("Hãy đăng nhập để sao chép.")))
-        local.exportCategory(categoryId) { result ->
-            result.fold({ copy ->
-                account(uid, true, callback) {
-                    copyCategory(categoryId, name, copy)
+    fun transferLocal(categoryId: String, owner: String, name: String, callback: (Result<Unit>) -> Unit) {
+        if (!WorkspaceSync.configured) return callback(Result.failure(WorkspaceRequestError("BACKEND_NOT_CONFIGURED")))
+        executor.execute {
+            val result = runCatching {
+                val title = normalizedName(name)
+                require(title.length in 1..100) { "Tên danh mục cần từ 1 đến 100 ký tự." }
+                synchronized(categoryTransferLock) {
+                    open(owner) {
+                        check(database.tasks().categoryId(owner, nameKey(title)) == null) {
+                            "Tài khoản đã có danh mục cùng tên. Hãy chọn tên khác."
+                        }
+                        GuestCategoryTransfers(context, AppDatabase.guestBuilder(context).build()).use { guest ->
+                            val source = guest.begin(categoryId, owner, title)
+                            try {
+                                transferIn(source)
+                            } catch (error: Exception) {
+                                guest.release(source.request)
+                                throw error
+                            }
+                        }
+                        AccountReminders.reconcile(context, this)
+                    }
                 }
-            }, { callback(Result.failure(it)) })
+                WorkspaceSync.request(context, owner)
+                WorkspaceSync.changed()
+            }
+            main.post {
+                if (currentUid == owner) callback(result)
+                else callback(Result.failure(IllegalStateException("Phiên đăng nhập đã thay đổi.")))
+            }
         }
     }
 
     internal fun sharing(categoryId: String, callback: (Result<Boolean>) -> Unit) {
         val uid = currentUid ?: return callback(Result.success(false))
         account(uid, callback = callback) {
-            category(categoryId)?.long("revision")?.let { it > 0 } == true &&
+            categoryId !in transferIds() && category(categoryId)?.long("revision")?.let { it > 0 } == true &&
                 commands().none { it["category_id"] == categoryId }
         }
     }
@@ -386,7 +409,7 @@ class UnifiedTaskRepository private constructor(private val context: Context) {
                 val live = if (kind in setOf("CATEGORY", "TASK", "SUBTASK")) {
                     sql.rows("SELECT * FROM $table WHERE id=?", id).firstOrNull()
                 } else null
-                command + ("current" to live)
+                command + mapOf("current" to live, "transfer_pending" to (command.string("category_id") in transferIds()))
             }
         }
     }
@@ -395,6 +418,7 @@ class UnifiedTaskRepository private constructor(private val context: Context) {
         val uid = currentUid ?: return
         account(uid, true, callback) {
             val command = commands().firstOrNull { it["operation_id"] == operationId && it["status"] == "REJECTED" }
+            check(command?.get("category_id") !in transferIds()) { "Không thể bỏ một phần danh mục đang chuyển." }
             if (command?.get("entity_type") == "CATEGORY" && command["action"] == "CREATE") {
                 sql.execSQL("DELETE FROM local_category_copies WHERE account_category_id=?", arrayOf(command["category_id"]))
             }
@@ -409,6 +433,3 @@ class UnifiedTaskRepository private constructor(private val context: Context) {
         }
     }
 }
-
-internal data class LocalCategoryCopy(val category: Row, val tasks: List<Row>,
-                                      val subtasks: Map<String, List<Row>>, val reminders: Map<String, Row>)

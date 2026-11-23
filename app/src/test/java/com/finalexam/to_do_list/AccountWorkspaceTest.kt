@@ -7,7 +7,7 @@ import com.finalexam.to_do_list.model.local.AppDatabase
 import com.finalexam.to_do_list.model.local.SchemaSql
 import com.finalexam.to_do_list.model.local.entity.UserEntity
 import com.finalexam.to_do_list.model.repository.AccountWorkspace
-import com.finalexam.to_do_list.model.repository.LocalCategoryCopy
+import com.finalexam.to_do_list.model.repository.GuestCategoryTransfers
 import com.finalexam.to_do_list.model.repository.WorkspaceSnapshot
 import com.finalexam.to_do_list.model.repository.long
 import com.finalexam.to_do_list.model.repository.rows
@@ -28,6 +28,11 @@ class AccountWorkspaceTest {
 
     private fun open(uid: String) =
         AccountWorkspace(uid, AppDatabase.accountBuilder(context, uid).allowMainThreadQueries().build())
+
+    private fun <T> useGuest(name: String, action: (AppDatabase) -> T): T {
+        val database = AppDatabase.guestBuilder(context, name).allowMainThreadQueries().build()
+        return try { action(database) } finally { database.close() }
+    }
 
     @Test fun migrateV3() {
         val uid = uuid()
@@ -112,38 +117,99 @@ class AccountWorkspaceTest {
         } finally { context.deleteDatabase(AppDatabase.accountFileName(uid)) }
     }
 
-    @Test fun copyAfterReopen() {
+    @Test fun transferAfterReopen() {
         val uid = uuid()
-        val sourceId = uuid()
+        val guestName = "transfer.db"
         val sourceTask = uuid()
         val sourceSubtask = uuid()
-        val copy = LocalCategoryCopy(
-            mapOf("id" to sourceId, "owner_uid" to "local:source"),
-            listOf(mapOf("id" to sourceTask, "title" to "Copied", "created_at" to 144, "is_done" to 1,
-                "completed_at" to 155, "repeat_type" to "WEEKLY", "due_at" to 200)),
-            mapOf(sourceTask to listOf(mapOf("id" to sourceSubtask, "title" to "Subtask", "is_done" to 1))),
-            mapOf(sourceTask to mapOf("task_id" to sourceTask, "user_uid" to "local:source", "remind_at" to 156, "is_enabled" to 1))
-        )
         try {
-            val destination = open(uid).use { store ->
+            val request = useGuest(guestName) { guest ->
+                val guestUid = guest.tasks().guestUid()
+                val sourceId = requireNotNull(guest.tasks().categoryId(guestUid, "học tập"))
+                val sql = guest.openHelper.writableDatabase
+                sql.execSQL("""INSERT INTO tasks(id,category_id,created_by_uid,title,created_at,client_updated_at,is_done,
+                    completed_at,repeat_type,due_at,deleted_at) VALUES(?,?,?,'Task',144,158,1,155,'WEEKLY',200,160)""",
+                    arrayOf(sourceTask, sourceId, guestUid))
+                sql.execSQL("""INSERT INTO subtasks(id,task_id,title,is_done,client_updated_at,deleted_at)
+                    VALUES(?,?,'Subtask',1,158,159)""", arrayOf(sourceSubtask, sourceTask))
+                sql.execSQL("""INSERT INTO task_reminders(task_id,user_uid,remind_at,is_enabled,client_updated_at)
+                    VALUES(?,?,156,1,158)""", arrayOf(sourceTask, guestUid))
+                GuestCategoryTransfers(context, guest).begin(sourceId, uid, "Học tập").request
+            }
+            useGuest(guestName) { guest -> open(uid).use { store ->
+                val guestTransfers = GuestCategoryTransfers(context, guest)
+                assertEquals(request, guestTransfers.pending(uid).single())
+                assertTrue(guestTransfers.pending("other").isEmpty())
+                assertNull(guest.tasks().role(request.id, guest.tasks().guestUid()))
+                assertNotNull(guest.tasks().findIncludingDeleted(sourceTask))
                 store.database.users().upsert(UserEntity(uid, "a@example.test", "a@example.test", "A"))
-                store.transaction { store.copyCategory(sourceId, "Copied list", copy) }
-            }
-            open(uid).use { store ->
-                assertEquals(destination, store.transaction { store.copyCategory(sourceId, "Copied list", copy) })
-                assertNotEquals(sourceId, destination)
-                val copied = store.sql.rows("SELECT * FROM tasks").single()
-                assertNotEquals(sourceTask, copied["id"])
-                assertEquals(uid, copied["created_by_uid"])
-                assertEquals(155L, copied["completed_at"])
-                assertEquals("WEEKLY", copied["repeat_type"])
-                assertNotEquals(sourceSubtask, store.sql.rows("SELECT id FROM subtasks").single()["id"])
+                store.transferIn(guestTransfers.read(request))
+            } }
+            useGuest(guestName) { guest -> open(uid).use { store ->
+                val guestTransfers = GuestCategoryTransfers(context, guest)
+                store.transferIn(guestTransfers.read(request))
+                assertEquals(uid, store.category(request.id)!!["owner_uid"])
+                assertEquals("OWNER", store.role(request.id))
+                val moved = store.sql.rows("SELECT * FROM tasks").single()
+                assertEquals(sourceTask, moved["id"])
+                assertEquals(uid, moved["created_by_uid"])
+                assertEquals(155L, moved["completed_at"])
+                assertEquals(160L, moved["deleted_at"])
+                assertEquals("WEEKLY", moved["repeat_type"])
+                assertEquals(sourceSubtask, store.sql.rows("SELECT id FROM subtasks").single()["id"])
                 assertEquals(uid, store.sql.rows("SELECT user_uid FROM task_reminders").single()["user_uid"])
-                val envelope = store.commands().joinToString { store.envelope(it).toString() }
-                assertFalse(envelope.contains("local:"))
-                assertFalse(envelope.contains(sourceTask))
-                assertEquals(4, store.commands().size)
+                val envelope = store.commands().map(store::envelope)
+                assertFalse(envelope.toString().contains("local:"))
+                assertEquals(listOf("CREATE", "CREATE", "CREATE", "TRASH", "CREATE", "TRASH"), envelope.map { it["kind"] })
+                assertEquals(request.id, envelope.first()["category_id"])
+                assertEquals(sourceTask, envelope.last()["entity_id"])
+                assertTrue(store.categories().single().transferring)
+                assertTrue(runCatching { store.requireRole(request.id, "OWNER") }.isFailure)
+                assertNotNull(guest.tasks().findIncludingDeleted(sourceTask))
+                while (store.commands().isNotEmpty()) store.acknowledge(store.commands().first(), mapOf("revision" to 1))
+                guestTransfers.complete(request)
+                store.clearTransfer(request.id)
+                assertFalse(store.categories().single().transferring)
+            } }
+            useGuest(guestName) { guest ->
+                assertNull(guest.tasks().findIncludingDeleted(sourceTask))
+                assertNull(guest.tasks().categoryId(guest.tasks().guestUid(), "học tập"))
+                assertTrue(GuestCategoryTransfers(context, guest).pending(uid).isEmpty())
             }
-        } finally { context.deleteDatabase(AppDatabase.accountFileName(uid)) }
+        } finally {
+            context.deleteDatabase(AppDatabase.accountFileName(uid))
+            context.deleteDatabase(guestName)
+        }
+    }
+
+    @Test fun rejectedTransferRestoresLocalSource() {
+        val uid = uuid()
+        val guestName = "reject.db"
+        try {
+            useGuest(guestName) { guest ->
+                val guestUid = guest.tasks().guestUid()
+                val id = requireNotNull(guest.tasks().categoryId(guestUid, "học tập"))
+                val transfers = GuestCategoryTransfers(context, guest)
+                val source = transfers.begin(id, uid, "Học tập")
+                open(uid).use { store ->
+                    store.database.users().upsert(UserEntity(uid, "", "", "A"))
+                    store.transferIn(source)
+                    val create = store.commands().single()
+                    store.failed(create, "NAME_ALREADY_EXISTS", retry = false)
+                    store.releaseRejectedTransfer(id)
+                    transfers.release(source.request)
+                    assertEquals("OWNER", guest.tasks().role(id, guestUid))
+                    assertTrue(transfers.pending(uid).isEmpty())
+                    assertNull(store.category(id))
+                    assertEquals("NAME_ALREADY_EXISTS", store.commands().single()["last_error"])
+                    store.transferIn(transfers.begin(id, uid, "Tên khác"))
+                    assertEquals("Tên khác", store.category(id)!!["name"])
+                    assertEquals("PENDING", store.commands().single()["status"])
+                }
+            }
+        } finally {
+            context.deleteDatabase(AppDatabase.accountFileName(uid))
+            context.deleteDatabase(guestName)
+        }
     }
 }

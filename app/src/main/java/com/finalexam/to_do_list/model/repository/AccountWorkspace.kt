@@ -17,7 +17,8 @@ data class WorkspaceRef(val uid: String? = null)
 data class CategoryRef(val workspace: WorkspaceRef, val id: String)
 data class TaskRef(val workspace: WorkspaceRef, val id: String)
 data class WorkspaceCategory(
-    val ref: CategoryRef, val name: String, val role: String, val owner: String = "", val revision: Long = 0
+    val ref: CategoryRef, val name: String, val role: String, val owner: String = "", val revision: Long = 0,
+    val transferring: Boolean = false
 ) {
     val label get() = name + if (ref.workspace.uid == null) " · Local" else
         " · Tài khoản" + if (owner.isNotBlank() && role != "OWNER") " · $owner" else ""
@@ -91,6 +92,7 @@ internal class AccountWorkspace(val uid: String, val database: AppDatabase) : Au
 
     fun home(): List<HomeTask> {
         val queue = commands().groupBy { it.string("category_id") }
+        val transferring = transferIds()
         return database.tasks().homeTasks(uid).map { task ->
             val pending = queue[task.categoryId].orEmpty().filter {
                 it.string("entity_id").substringBefore('/') == task.id || it.string("entity_type") == "CATEGORY"
@@ -101,22 +103,25 @@ internal class AccountWorkspace(val uid: String, val database: AppDatabase) : Au
                 pending.isNotEmpty() || task.revision == 0L -> "Chờ đồng bộ"
                 else -> "Đã đồng bộ"
             }
-            task.copy(workspaceUid = uid, syncLabel = status)
+            task.copy(workspaceUid = uid, syncLabel = status, transferring = task.categoryId in transferring)
         }
     }
 
     fun categories(): List<WorkspaceCategory> = sql.rows("""
-        SELECT c.*, m.role, u.full_name FROM categories c JOIN category_members m ON m.category_id=c.id
+        SELECT c.*, m.role, u.full_name, x.category_id IS NOT NULL AS transferring
+        FROM categories c JOIN category_members m ON m.category_id=c.id
         JOIN users u ON u.uid=c.owner_uid
+        LEFT JOIN local_category_transfers x ON x.category_id=c.id
         WHERE c.deleted_at IS NULL AND m.user_uid=? AND m.status='ACTIVE' ORDER BY c.name
     """.trimIndent(), uid).map {
         WorkspaceCategory(CategoryRef(WorkspaceRef(uid), it.string("id")), it.string("name"),
-            it.string("role"), it.string("full_name"), it.long("revision"))
+            it.string("role"), it.string("full_name"), it.long("revision"), it.long("transferring") == 1L)
     }
 
     fun category(cid: String) = sql.rows("SELECT * FROM categories WHERE id=?", cid).singleOrNull()
     fun role(cid: String) = database.tasks().role(cid, uid)
     fun requireRole(cid: String, vararg roles: String) {
+        check(cid !in transferIds()) { "Hãy chờ danh mục chuyển xong trước khi thay đổi." }
         check(role(cid) in roles) { "Bạn không có quyền thực hiện thao tác này." }
     }
 
@@ -132,31 +137,62 @@ internal class AccountWorkspace(val uid: String, val database: AppDatabase) : Au
         return id
     }
 
-    fun copyCategory(categoryId: String, name: String, copy: LocalCategoryCopy): String {
-        sql.rows("SELECT account_category_id FROM local_category_copies WHERE local_category_id=?", categoryId)
-            .firstOrNull()?.let { return it.string("account_category_id") }
-        val cid = createCategory(name, color = copy.category["color"] as String?)
-        for (source in copy.tasks) {
-            val sourceId = source.string("id")
-            val id = uuid()
-            val fields = source.filterKeys { it in setOf("title", "description", "due_at", "priority", "is_done",
+    fun transferIds(): Set<String> = sql.rows(
+        "SELECT category_id FROM local_category_transfers WHERE owner_uid=?", uid
+    ).map { it.string("category_id") }.toSet()
+
+    fun transferIn(source: LocalCategoryTransfer) = transaction {
+        val request = source.request
+        val cid = request.id
+        check(request.owner == uid)
+        if (cid in transferIds()) return@transaction
+        check(category(cid) == null) { "Danh mục này đã tồn tại trong tài khoản." }
+        check(database.tasks().categoryId(uid, nameKey(request.name)) == null) {
+            "Tài khoản đã có danh mục cùng tên. Hãy chọn tên khác."
+        }
+        sql.execSQL("DELETE FROM sync_queue WHERE category_id=? AND status='REJECTED'", arrayOf(cid))
+        createCategory(request.name, id = cid, color = source.category["color"] as String?)
+        sql.execSQL("""INSERT INTO local_category_transfers(category_id,owner_uid,source_name_key,name)
+            VALUES(?,?,?,?)""", request.bindings)
+        for (task in source.tasks) {
+            val id = task.string("id")
+            check(database.tasks().findIncludingDeleted(id) == null) { "Một công việc đã tồn tại trong tài khoản." }
+            val fields = task.filterKeys { it in setOf("title", "description", "due_at", "priority", "is_done",
                 "completed_at", "repeat_type", "timezone", "repeat_anchor_day", "created_at") }
-            upsert("tasks", fields + mapOf("id" to id, "category_id" to cid, "created_by_uid" to uid, "client_updated_at" to now))
+            upsert("tasks", task + mapOf("category_id" to cid, "created_by_uid" to uid))
             enqueue(cid, "TASK", id, "CREATE", 0, fields)
-            copy.subtasks[sourceId].orEmpty().forEach { subtask ->
-                val subId = uuid()
+            source.subtasks[id].orEmpty().forEach { subtask ->
+                val subId = subtask.string("id")
+                check(sql.rows("SELECT id FROM subtasks WHERE id=?", subId).isEmpty()) {
+                    "Một công việc con đã tồn tại trong tài khoản."
+                }
                 val fieldsSub = subtask.filterKeys { it in setOf("title", "is_done", "sort_order") }
-                upsert("subtasks", fieldsSub + mapOf("id" to subId, "task_id" to id, "client_updated_at" to now))
+                upsert("subtasks", subtask)
                 enqueue(cid, "SUBTASK", "$id/$subId", "CREATE", 0, fieldsSub)
+                if (subtask["deleted_at"] != null) enqueue(cid, "SUBTASK", "$id/$subId", "TRASH", 0)
             }
-            copy.reminders[sourceId]?.let { reminder ->
+            source.reminders[id]?.let { reminder ->
                 val settings = reminder.filterKeys { it in setOf("remind_at", "is_enabled") }
-                upsert("task_reminders", settings + mapOf("task_id" to id, "user_uid" to uid, "client_updated_at" to now))
+                upsert("task_reminders", reminder + mapOf("user_uid" to uid, "deleted_at" to null))
                 enqueue(cid, "REMINDER", "$id/$uid", "CREATE", 0, settings)
             }
+            if (id in source.participants) {
+                upsert("task_participants", mapOf("task_id" to id, "category_id" to cid, "user_uid" to uid, "joined_at" to now))
+                enqueue(cid, "PARTICIPANT", "$id/$uid", "CREATE", 0)
+            }
+            // The remote parent stays active until all of its child commands finish.
+            if (task["deleted_at"] != null) enqueue(cid, "TASK", id, "TRASH", 0)
         }
-        sql.execSQL("INSERT INTO local_category_copies VALUES(?,?)", arrayOf(categoryId, cid))
-        return cid
+    }
+
+    fun clearTransfer(cid: String) {
+        sql.execSQL("DELETE FROM local_category_transfers WHERE category_id=? AND owner_uid=?", arrayOf(cid, uid))
+    }
+
+    fun releaseRejectedTransfer(cid: String) = transaction {
+        sql.execSQL("DELETE FROM categories WHERE id=? AND revision=0", arrayOf(cid))
+        sql.execSQL("DELETE FROM sync_queue WHERE category_id=? AND status<>'REJECTED'", arrayOf(cid))
+        clearTransfer(cid)
     }
 
     fun todoCategory(): String = database.tasks().categoryId(uid, "to do") ?: createCategory("to do")
@@ -241,6 +277,7 @@ internal class AccountWorkspace(val uid: String, val database: AppDatabase) : Au
         sql.execSQL("""UPDATE sync_queue SET status=?,last_error=?,retry_count=retry_count+1,next_retry_at=?
             WHERE operation_id=?""", arrayOf(if (retry) "FAILED" else "REJECTED", reason,
             if (retry) now + delay else null, command["operation_id"]))
+        if (command.string("category_id") in transferIds()) return@transaction
         if (!retry) {
             var previous = listOf(command.string("operation_id"))
             while (previous.isNotEmpty()) {
@@ -278,6 +315,7 @@ internal class AccountWorkspace(val uid: String, val database: AppDatabase) : Au
     }
 
     fun dropCategory(cid: String) = transaction {
+        if (cid in transferIds()) return@transaction
         sql.execSQL("DELETE FROM categories WHERE id=?", arrayOf(cid))
         sql.execSQL("DELETE FROM sync_state WHERE category_id=?", arrayOf(cid))
         sql.execSQL("DELETE FROM local_category_copies WHERE account_category_id=?", arrayOf(cid))
@@ -349,6 +387,7 @@ internal class AccountWorkspace(val uid: String, val database: AppDatabase) : Au
             val parentActive = when (type) { "CATEGORY" -> "1=1"; "TASK" -> "c.deleted_at IS NULL"; else -> "c.deleted_at IS NULL AND t.deleted_at IS NULL" }
             sql.rows("""SELECT $fields,m.role FROM $from JOIN category_members m ON m.category_id=c.id
                     WHERE m.user_uid=? AND m.status='ACTIVE' AND m.role IN ('OWNER','EDITOR')
+                    AND NOT EXISTS (SELECT 1 FROM local_category_transfers x WHERE x.category_id=c.id)
                     AND $deleted IS NOT NULL AND $parentActive""", uid).mapTo(result) {
                 TrashTask(it.string("id"), it.string("title"), it.string("category"), it.long("deleted_at"),
                     it.string("cid"), uid, it.string("role"), type, it["parent"] as String?, it.long("revision"))

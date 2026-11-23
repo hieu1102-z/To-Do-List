@@ -52,19 +52,32 @@ class TaskReminderReceiver : BroadcastReceiver() {
             return
         }
 
-        // Đánh dấu có thông báo mới chưa đọc
-        NotificationPreferences.setUnreadNotification(context, true)
-
-        context.sendBroadcast(Intent(ACTION_REMINDER).apply {
-            setPackage(context.packageName)
-            putExtra(EXTRA_TASK_ID, taskId)
-            putExtra(EXTRA_TASK_TITLE, taskTitle)
-        })
-
-        NotificationHelper.show(
-            context,
-            taskId,
-            taskTitle
-        )
+        val pending = goAsync()
+        io.execute {
+            try {
+                if (!NotificationPreferences.isEnabled(context)) return@execute
+                val db = AppDatabase.guestBuilder(context).build()
+                try {
+                    val title = db.openHelper.readableDatabase.rows("""
+                        SELECT t.title FROM tasks t JOIN categories c ON c.id=t.category_id
+                        JOIN category_members m ON m.category_id=c.id AND m.user_uid=c.owner_uid
+                        JOIN task_reminders r ON r.task_id=t.id AND r.user_uid=m.user_uid
+                        WHERE t.id=? AND m.status='ACTIVE' AND t.is_done=0 AND t.deleted_at IS NULL
+                          AND c.deleted_at IS NULL AND r.deleted_at IS NULL AND r.is_enabled=1
+                    """.trimIndent(), taskId).firstOrNull()?.get("title") as? String ?: return@execute
+                    NotificationPreferences.setUnreadNotification(context, true)
+                    context.sendBroadcast(Intent(ACTION_REMINDER).apply {
+                        setPackage(context.packageName)
+                        putExtra(EXTRA_TASK_ID, taskId)
+                        putExtra(EXTRA_TASK_TITLE, title)
+                    })
+                    NotificationHelper.show(context, taskId, title)
+                } finally { db.close() }
+            } catch (error: android.database.SQLException) {
+                android.util.Log.w("ReminderReceiver", "Local reminder could not be checked", error)
+            } finally {
+                pending.finish()
+            }
+        }
     }
 }
