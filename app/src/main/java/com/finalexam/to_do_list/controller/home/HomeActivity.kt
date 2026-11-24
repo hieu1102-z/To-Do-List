@@ -1382,6 +1382,7 @@ open class HomeActivity : WorkspaceActivity() {
 
         addScreenNavigation(root, selectedNavigation)
         setContentView(root)
+        applyInsets(root)
     }
 
     private fun showProfileEditScreen() {
@@ -1502,6 +1503,7 @@ open class HomeActivity : WorkspaceActivity() {
         scroll.addView(content)
         root.addView(scroll, LinearLayout.LayoutParams(-1, 0, 1f))
         setContentView(root)
+        applyInsets(root)
 
         fun refresh() {
             if (!trashPageOpen || isFinishing || isDestroyed) return
@@ -1747,13 +1749,6 @@ open class HomeActivity : WorkspaceActivity() {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(22), dp(24), dp(22), dp(14))
         }
-
-        // Tiêu đề
-        content.addView(
-            text("Cá nhân", 24f, ink, true).apply {
-                setPadding(0, dp(18), 0, dp(42))
-            }
-        )
 
         // Avatar
         val avatarInitials = TextView(this).apply {
