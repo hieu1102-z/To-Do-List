@@ -15,18 +15,24 @@ abstract class DatabaseTestBase {
     protected lateinit var database: AppDatabase
     protected lateinit var sql: SupportSQLiteDatabase
     protected lateinit var name: String
-    protected val uid get() = scalar("SELECT uid FROM users WHERE uid LIKE 'local:%'")!!
+    protected val uid = "test-owner"
     protected val category get() = scalar("SELECT id FROM categories WHERE name='Cá nhân'")!!
     protected val study get() = scalar("SELECT id FROM categories WHERE name='Học tập'")!!
 
     @Before fun openDatabase() {
         name = "jvm-${UUID.randomUUID()}.db"
         reopen()
+        user(uid)
+        listOf("Cá nhân", "Học tập", "Công việc", "Mua sắm").forEachIndexed { i, title ->
+            val id = "category-$i"
+            execute("INSERT INTO categories(id,owner_uid,name,name_key,created_at,client_updated_at) VALUES(?,?,?,?,1,1)", id, uid, title, title)
+            member(uid, id, "OWNER")
+        }
     }
 
     protected fun reopen() {
         if (::database.isInitialized) database.close()
-        database = AppDatabase.guestBuilder(context, name).allowMainThreadQueries().build()
+        database = AppDatabase.builder(context, name).allowMainThreadQueries().build()
         sql = database.openHelper.writableDatabase
     }
 

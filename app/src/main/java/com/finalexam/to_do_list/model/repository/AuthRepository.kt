@@ -5,7 +5,6 @@ import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
 import android.util.Patterns
-import com.finalexam.to_do_list.model.local.AppDatabase
 import com.finalexam.to_do_list.model.remote.AuthUser
 import com.finalexam.to_do_list.model.remote.EmailAuthGateway
 import com.finalexam.to_do_list.model.remote.FirebaseEmailAuthGateway
@@ -15,7 +14,7 @@ import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 
-/** Firebase alone authenticates accounts; guest data is never uploaded on login. */
+/** Firebase authenticates accounts before the application prepares their workspace. */
 class AuthRepository internal constructor(
     private val gateway: EmailAuthGateway,
     private val profiles: AccountProfileStore,
@@ -244,9 +243,16 @@ class AuthRepository internal constructor(
             instance ?: context.applicationContext.let { app ->
                 val main = Handler(Looper.getMainLooper())
                 AuthRepository(FirebaseEmailAuthGateway(app),
-                    RoomAccountProfileStore { AppDatabase.accountBuilder(app, it).build() },
+                    AccountProfileStore { user ->
+                        AccountSession.current(app)?.takeIf { it.uid == user.uid }?.let { session ->
+                            AccountSession.access(app, session) { database.cacheProfile(user) }
+                        }
+                    },
                     Executors.newSingleThreadExecutor(), { action -> main.post { action() }; Unit },
-                    onSignOut = { uid -> WorkspaceSync.signOut(app, uid) })
+                    onSignOut = { uid ->
+                        AccountSession.revoke(app, uid)
+                        WorkspaceSync.signOut(app, uid)
+                    })
             }.also { instance = it }
         }
     }

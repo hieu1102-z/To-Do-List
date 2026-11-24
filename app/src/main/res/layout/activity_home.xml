@@ -44,8 +44,15 @@
         <LinearLayout android:id="@+id/filters" android:layout_width="match_parent" android:layout_height="48dp" android:orientation="horizontal" android:padding="4dp" android:background="#ECEFFC"/>
     </HorizontalScrollView>
     <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginHorizontal="20dp" android:layout_marginTop="16dp" android:layout_marginBottom="12dp" android:gravity="center_vertical">
-        <TextView android:id="@+id/sectionTitle" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content" android:text="Công việc hôm nay" android:textColor="@color/ink" android:textSize="16sp" android:fontFamily="sans-serif" android:textStyle="bold"/>
-        <TextView android:id="@+id/count" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="0 công việc" android:textSize="12sp" android:textColor="@color/muted"/>
+        <TextView android:id="@+id/sectionTitle" android:layout_width="0dp" android:layout_weight="1.25" android:layout_height="wrap_content" android:text="Công việc hôm nay" android:textColor="@color/ink" android:textSize="16sp" android:fontFamily="sans-serif" android:textStyle="bold"/>
+        <TextView android:id="@+id/categoryPicker" android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content"
+            android:layout_marginStart="8dp" android:minHeight="48dp" android:gravity="end|center_vertical"
+            android:maxLines="1" android:ellipsize="end" android:drawableEnd="@drawable/ic_dropdown"
+            android:drawablePadding="2dp" android:background="?android:attr/selectableItemBackground"
+            android:clickable="true" android:focusable="true" android:text="@string/home_category_all"
+            android:textColor="@color/ink" android:textSize="13sp" android:fontFamily="sans-serif-medium" />
+        <TextView android:id="@+id/count" android:layout_width="wrap_content" android:layout_height="wrap_content"
+            android:layout_marginStart="4dp" android:textSize="12sp" android:textColor="@color/muted"/>
     </LinearLayout>
     <EditText android:id="@+id/query" style="@style/FormInput" android:layout_width="match_parent" android:layout_marginHorizontal="20dp" android:layout_marginBottom="8dp" android:hint="Tìm theo tiêu đề hoặc mô tả" android:inputType="text" android:imeOptions="actionSearch" android:visibility="gone"/>
     <FrameLayout android:layout_width="match_parent" android:layout_height="0dp" android:layout_weight="1">

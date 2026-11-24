@@ -14,17 +14,12 @@ import java.security.MessageDigest
 @Database(entities = [UserEntity::class, CategoryEntity::class, CategoryMemberEntity::class,
     CategoryInvitationEntity::class, TaskEntity::class, TaskParticipantEntity::class,
     SubtaskEntity::class, TaskReminderEntity::class, SyncQueueEntity::class, SyncStateEntity::class],
-    version = 4, exportSchema = true)
+    version = 6, exportSchema = true)
 abstract class AppDatabase : RoomDatabase() {
     abstract fun tasks(): TaskDao
     abstract fun users(): UserDao
 
     companion object {
-        const val GUEST_DATABASE_NAME = "guest-workspace.db"
-
-        fun guestBuilder(context: Context, name: String = GUEST_DATABASE_NAME): Builder<AppDatabase> =
-            builder(context, name, guest = true)
-
         fun accountFileName(uid: String): String {
             require(uid.isNotBlank() && !uid.startsWith("local:"))
             val hash = MessageDigest.getInstance("SHA-256").digest(uid.toByteArray(Charsets.UTF_8))
@@ -33,15 +28,14 @@ abstract class AppDatabase : RoomDatabase() {
         }
 
         fun accountBuilder(context: Context, uid: String): Builder<AppDatabase> =
-            builder(context, accountFileName(uid), guest = false)
+            builder(context, accountFileName(uid))
 
-        private fun builder(context: Context, name: String, guest: Boolean): Builder<AppDatabase> =
+        internal fun builder(context: Context, name: String): Builder<AppDatabase> =
             Room.databaseBuilder(context.applicationContext, AppDatabase::class.java, name)
-                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
+                .addMigrations(MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6)
                 .addCallback(object : Callback() {
                     override fun onCreate(db: SupportSQLiteDatabase) {
                         SchemaSql.replaceEmptyRoomTables(db)
-                        installSyncMetadata(db)
                     }
                     override fun onOpen(db: SupportSQLiteDatabase) {
                         // Configure the whole SQLite connection pool, including WAL readers.
@@ -50,39 +44,24 @@ abstract class AppDatabase : RoomDatabase() {
                         db.beginTransaction()
                         try {
                             SchemaSql.installPartialIndexes(db)
-                            if (guest) GuestBootstrap.initialize(db)
                             db.setTransactionSuccessful()
                         } finally { db.endTransaction() }
                     }
                 })
 
-        val MIGRATION_1_2: Migration = object : Migration(1, 2) {
+        private val MIGRATION_5_6 = object : Migration(5, 6) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 SchemaSql.removePartialIndexesForMigration(db)
-                SchemaSql.create(db)
-                val uid = GuestBootstrap.initialize(db)
-                var expected = 0L
-                db.query("SELECT * FROM guest_tasks").use { rows ->
-                    fun text(column: String) = rows.getString(rows.getColumnIndexOrThrow(column))
-                    fun number(column: String) = rows.getLong(rows.getColumnIndexOrThrow(column))
-                    fun optionalNumber(column: String): Long? = rows.getColumnIndexOrThrow(column).let { if (rows.isNull(it)) null else rows.getLong(it) }
-                    while (rows.moveToNext()) {
-                        val categoryId = GuestBootstrap.ensureCategory(db, uid, text("category"), System.currentTimeMillis())
-                        db.execSQL("""INSERT INTO tasks(id,category_id,created_by_uid,title,description,due_at,priority,is_done,completed_at,created_at,client_updated_at)
-                            VALUES(?,?,?,?,?,?,?,?,?,?,?)""", arrayOf<Any?>(text("id"), categoryId, uid, text("title"), text("description"),
-                            optionalNumber("dueAt"), number("priority"), number("done"), optionalNumber("completedAt"), number("createdAt"), number("updatedAt")))
-                        expected++
-                    }
-                }
-                db.query("SELECT COUNT(*) FROM tasks").use { check(it.moveToFirst() && it.getLong(0) == expected) { "Task migration count mismatch." } }
-                db.query("PRAGMA foreign_key_check").use { check(!it.moveToFirst()) { "Foreign key violation during migration." } }
-                db.execSQL("DROP TABLE guest_tasks")
-                // Room validates modeled columns/FKs/indexes next. WHERE indexes are added onOpen.
+                db.execSQL("ALTER TABLE categories ADD COLUMN icon TEXT")
             }
         }
 
-        private fun installSyncMetadata(db: SupportSQLiteDatabase) {
-            db.execSQL("CREATE TABLE IF NOT EXISTS local_category_copies (local_category_id TEXT PRIMARY KEY NOT NULL, account_category_id TEXT NOT NULL)")
+        val MIGRATION_4_5 = object : Migration(4, 5) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                SchemaSql.removePartialIndexesForMigration(db)
+                db.execSQL("DROP TABLE IF EXISTS local_category_copies")
+                db.execSQL("DROP TABLE IF EXISTS local_category_transfers")
+            }
         }
 
         val MIGRATION_3_4: Migration = object : Migration(3, 4) {
@@ -94,7 +73,6 @@ abstract class AppDatabase : RoomDatabase() {
                 if ("predecessor_id" !in columns) db.execSQL("ALTER TABLE sync_queue ADD COLUMN predecessor_id TEXT")
                 if ("dispatched" !in columns) db.execSQL("ALTER TABLE sync_queue ADD COLUMN dispatched INTEGER NOT NULL DEFAULT 0")
                 if ("membership_revision" !in columns) db.execSQL("ALTER TABLE sync_queue ADD COLUMN membership_revision INTEGER NOT NULL DEFAULT 0")
-                installSyncMetadata(db)
             }
         }
 

@@ -1,0 +1,26 @@
+<resources>
+    <string name="category_members_heading">Thành viên</string>
+    <string name="category_members_invite">Mời theo email</string>
+    <string name="category_members_leave">Rời danh mục</string>
+    <string name="category_members_loading">Đang tải thành viên…</string>
+    <string name="category_members_empty">Chưa có thành viên.</string>
+    <string name="category_members_wait_for_sync">Hãy chờ danh mục đồng bộ xong trước khi mời.</string>
+    <string name="category_members_cached">Không thể cập nhật. Đang hiển thị danh sách đã lưu.</string>
+    <string name="category_members_unknown">Thành viên</string>
+    <string name="category_members_entry">%1$s · %2$s</string>
+    <string name="category_members_pending_entry">%1$s\n%2$s · Đang chờ xác nhận</string>
+    <string name="category_members_pending_unavailable">Không thể cập nhật lời mời đang chờ.</string>
+    <string name="category_members_cancel_invitation">Hủy lời mời</string>
+    <string name="category_members_cancel_invitation_for">Hủy lời mời gửi đến %1$s</string>
+    <string name="category_members_cancel_invitation_title">Hủy lời mời này?</string>
+    <string name="category_members_cancel_invitation_message">Lời mời gửi đến %1$s sẽ bị hủy.</string>
+    <string name="category_members_keep_invitation">Giữ lời mời</string>
+    <string name="category_members_invitation_cancelled">Đã hủy lời mời.</string>
+
+    <style name="CategoryMembersAction">
+        <item name="android:layout_width">48dp</item>
+        <item name="android:layout_height">48dp</item>
+        <item name="android:background">?android:attr/selectableItemBackgroundBorderless</item>
+        <item name="android:scaleType">centerInside</item>
+    </style>
+</resources>

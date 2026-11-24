@@ -1,0 +1,24 @@
+<resources>
+    <string name="category_appearance_title">Biểu tượng và màu</string>
+    <string name="category_appearance_choose">Chọn biểu tượng và màu</string>
+    <string name="category_appearance_selection">Chọn biểu tượng và màu. Đang chọn %1$s, %2$s.</string>
+    <string name="category_appearance_icon">Biểu tượng</string>
+    <string name="category_appearance_color">Màu</string>
+    <string name="category_appearance_apply">Áp dụng</string>
+    <string name="category_icon_plus">Dấu cộng</string>
+    <string name="category_icon_folder">Thư mục</string>
+    <string name="category_icon_check">Dấu tích</string>
+    <string name="category_icon_star">Ngôi sao</string>
+    <string name="category_icon_book">Sách</string>
+    <string name="category_icon_work">Cặp công việc</string>
+    <string name="category_icon_shopping">Túi mua sắm</string>
+    <string name="category_icon_heart">Trái tim</string>
+    <string name="category_color_blue">Xanh dương</string>
+    <string name="category_color_teal">Xanh ngọc</string>
+    <string name="category_color_green">Xanh lá</string>
+    <string name="category_color_purple">Tím</string>
+    <string name="category_color_orange">Cam</string>
+    <string name="category_color_red">Đỏ</string>
+    <string name="category_color_pink">Hồng</string>
+    <string name="category_color_gray">Xám</string>
+</resources>

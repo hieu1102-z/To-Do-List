@@ -113,17 +113,17 @@ internal class WorkspaceHttp(
     }
 }
 
-internal fun workspaceHttp(app: FirebaseApp, uid: String): WorkspaceHttp =
+internal fun workspaceHttp(app: FirebaseApp, uid: String, active: () -> Boolean): WorkspaceHttp =
     WorkspaceHttp(WorkspaceApiConfig.url, uid, { force, remaining ->
         val auth = FirebaseAuth.getInstance(app)
-        val current = auth.currentUser?.takeIf { it.uid == uid }
+        val current = auth.currentUser?.takeIf { it.uid == uid && active() }
             ?: throw WorkspaceRequestError("UNAUTHENTICATED")
         val result = try { Tasks.await(current.getIdToken(force), remaining, TimeUnit.NANOSECONDS) }
         catch (error: ExecutionException) {
             if (error.cause is FirebaseAuthInvalidUserException) throw WorkspaceRequestError("UNAUTHENTICATED")
             throw WorkspaceRequestError("UNAVAILABLE")
         }
-        result.token?.takeIf { auth.currentUser?.uid == uid }
+        result.token?.takeIf { auth.currentUser?.uid == uid && active() }
             ?: throw WorkspaceRequestError("UNAUTHENTICATED")
     })
 

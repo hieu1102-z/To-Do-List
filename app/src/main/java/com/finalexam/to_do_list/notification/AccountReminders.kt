@@ -34,6 +34,14 @@ internal object AccountReminders {
     }
 
     @Synchronized
+    fun clearOtherAccounts(context: Context, uid: String) {
+        (prefs(context).all.keys - uid).forEach { cancel(context, it) }
+        val manager = context.getSystemService(NotificationManager::class.java)
+        manager.activeNotifications.filter { it.tag != uid }.forEach { manager.cancel(it.tag, it.id) }
+        NotificationPreferences.keepAccount(context, uid)
+    }
+
+    @Synchronized
     fun cancel(context: Context, uid: String) {
         prefs(context).getStringSet(uid, emptySet()).orEmpty().forEach {
             TaskReminderScheduler.cancel(context, it, "", uid)

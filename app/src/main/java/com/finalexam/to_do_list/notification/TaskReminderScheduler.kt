@@ -8,24 +8,31 @@ import android.net.Uri
 import android.os.Build
 
 object TaskReminderScheduler {
-    private fun intent(context: Context, id: String, title: String, uid: String?, at: Long): PendingIntent {
+    private fun intent(context: Context, id: String, title: String, uid: String, at: Long): PendingIntent {
         val broadcast = Intent(context, TaskReminderReceiver::class.java).apply {
             putExtra("task_id", id)
             putExtra("task_title", title)
             putExtra("account_uid", uid)
             putExtra("scheduled_at", at)
-            data = if (uid == null) Uri.parse("todolist://reminder/$id") else
-                Uri.Builder().scheme("todolist").authority("reminder").appendPath(uid).appendPath(id).build()
+            data = Uri.Builder().scheme("todolist").authority("reminder").appendPath(uid).appendPath(id).build()
         }
         return PendingIntent.getBroadcast(context, 0, broadcast,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+    }
+
+    internal fun cancelLegacy(context: Context, id: String) {
+        val broadcast = Intent(context, TaskReminderReceiver::class.java).apply {
+            data = Uri.parse("todolist://reminder/$id")
+        }
+        PendingIntent.getBroadcast(context, 0, broadcast, PendingIntent.FLAG_NO_CREATE or PendingIntent.FLAG_IMMUTABLE)
+            ?.let { operation -> manager(context).cancel(operation); operation.cancel() }
     }
 
     private fun manager(context: Context) = context.getSystemService(AlarmManager::class.java)
     fun canScheduleExactAlarms(context: Context) =
         Build.VERSION.SDK_INT < Build.VERSION_CODES.S || manager(context).canScheduleExactAlarms()
 
-    fun schedule(context: Context, taskId: String, title: String, remindAt: Long, uid: String? = null): Boolean {
+    fun schedule(context: Context, taskId: String, title: String, remindAt: Long, uid: String): Boolean {
         if (remindAt <= System.currentTimeMillis()) {
             cancel(context, taskId, title, uid)
             return false
@@ -42,7 +49,7 @@ object TaskReminderScheduler {
         }
     }
 
-    fun cancel(context: Context, taskId: String, title: String, uid: String? = null) {
+    fun cancel(context: Context, taskId: String, title: String, uid: String) {
         val operation = intent(context, taskId, title, uid, 0)
         manager(context).cancel(operation)
         operation.cancel()

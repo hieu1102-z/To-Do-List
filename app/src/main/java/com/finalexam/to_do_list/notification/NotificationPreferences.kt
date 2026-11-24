@@ -46,6 +46,12 @@ object NotificationPreferences {
 
     private const val KEY_DISMISSED_REMINDERS = "dismissed_reminders"
 
+    internal fun keepAccount(context: Context, uid: String) {
+        val dismissed = dismissedReminders(context).filter { it.startsWith("$uid/") }.toSet()
+        check(context.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE).edit()
+            .remove(KEY_UNREAD).putStringSet(KEY_DISMISSED_REMINDERS, dismissed).commit())
+    }
+
     fun dismissedReminders(context: Context): Set<String> = context.getSharedPreferences(
         PREF_NAME, Context.MODE_PRIVATE
     ).getStringSet(KEY_DISMISSED_REMINDERS, emptySet())?.toSet() ?: emptySet()

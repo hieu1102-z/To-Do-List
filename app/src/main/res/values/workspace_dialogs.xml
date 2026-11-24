@@ -1,0 +1,5 @@
+<resources>
+    <string name="workspace_dialog_close">Đóng</string>
+    <string name="workspace_dialog_empty">Không có mục nào.</string>
+    <string name="workspace_notice_close">Đóng thông báo</string>
+</resources>

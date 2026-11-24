@@ -1,14 +1,28 @@
 package com.finalexam.to_do_list.controller.home
 
-import android.app.AlertDialog
 import android.content.Intent
-import android.widget.EditText
-import android.widget.Toast
+import android.text.InputType
+import android.view.Gravity
+import android.view.View
+import android.widget.LinearLayout
+import android.widget.TextView
+import androidx.core.content.ContextCompat
+import androidx.core.view.ViewCompat
+import androidx.core.view.isVisible
+import com.finalexam.to_do_list.R
 import com.finalexam.to_do_list.controller.auth.RegisterActivity
+import com.finalexam.to_do_list.controller.home.WorkspaceDialogs.Action
+import com.finalexam.to_do_list.controller.home.WorkspaceDialogs.Tone
+import com.finalexam.to_do_list.databinding.ViewCategoryMembersBinding
+import com.finalexam.to_do_list.databinding.ViewPendingCategoryInvitationBinding
+import com.finalexam.to_do_list.model.repository.AccountSession
 import com.finalexam.to_do_list.model.repository.AuthRepository
 import com.finalexam.to_do_list.model.repository.Row
 import com.finalexam.to_do_list.model.repository.UnifiedTaskRepository
 import com.finalexam.to_do_list.model.repository.WorkspaceCategory
+import com.finalexam.to_do_list.model.repository.WorkspaceMember
+import com.finalexam.to_do_list.model.repository.WorkspaceMembers
+import com.finalexam.to_do_list.model.repository.WorkspacePendingInvitation
 import com.finalexam.to_do_list.model.repository.WorkspaceSync
 import com.finalexam.to_do_list.model.repository.businessCode
 import com.finalexam.to_do_list.model.repository.long
@@ -19,165 +33,325 @@ import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 
-internal class SharingDialogs(private val activity: HomeActivity, private val repository: UnifiedTaskRepository) {
+internal class SharingDialogs(
+    private val activity: HomeActivity,
+    private val repository: UnifiedTaskRepository,
+    private val dialogs: WorkspaceDialogs
+) {
     private val active get() = !activity.isFinishing && !activity.isDestroyed
     private val auth get() = AuthRepository.get(activity)
 
-    fun copy(category: WorkspaceCategory, changed: () -> Unit) {
-        val user = auth.user ?: return
-        if (!WorkspaceSync.configured) return showBackendUnavailable()
-        repository.copyPreview(category.ref.id) { result ->
-            if (!active || auth.user?.uid != user.uid) return@copyPreview
-            result.fold({ count ->
-                val name = EditText(activity).apply { setSingleLine(); setText(category.name) }
-                AlertDialog.Builder(activity).setTitle("Sao chép danh mục lên tài khoản")
-                    .setMessage("Sao chép $count công việc vào " + user.email + ". Bản Local sẽ được giữ trên thiết bị.")
-                    .setView(name).setNegativeButton("Hủy", null)
-                    .setPositiveButton("Sao chép") { _, _ ->
-                        if (auth.user?.uid == user.uid) {
-                            repository.copyLocal(category.ref.id, name.text.toString()) {
-                                if (it.isSuccess) {
-                                    toast("Đã lưu bản sao. Bạn có thể mời sau khi bản sao đồng bộ xong.")
-                                    changed()
-                                } else error(it.exceptionOrNull())
+    fun bindMembers(
+        category: WorkspaceCategory,
+        container: LinearLayout,
+        shareButton: View,
+        isCurrent: () -> Boolean,
+        changed: () -> Unit,
+        close: () -> Unit
+    ) {
+        val cid = category.ref.id
+        shareButton.isVisible = false
+        val session = AccountSession.current(activity)?.takeIf { active && it.uid == category.ref.workspace.uid } ?: return
+        val binding = ViewCategoryMembersBinding.inflate(activity.layoutInflater, container, true)
+        ViewCompat.setAccessibilityHeading(binding.heading, true)
+
+        fun attached() = active && isCurrent() && AccountSession.current(activity) === session
+        fun setStatus(message: String?, error: Boolean = false) {
+            binding.status.text = message
+            binding.status.setTextColor(ContextCompat.getColor(activity, if (error) R.color.task_delete_danger else R.color.muted))
+            binding.status.isVisible = message != null
+        }
+        fun showFeedback(message: String, isError: Boolean) {
+            if (!active || AccountSession.current(activity) !== session) return
+            if (attached()) setStatus(message, isError) else dialogs.notice(message, error = isError)
+        }
+        fun showMembership(role: String?, showMembers: Boolean) {
+            binding.panel.isVisible = showMembers
+            shareButton.isVisible = role == "OWNER" && !showMembers
+            binding.invite.isVisible = role == "OWNER" && showMembers
+            binding.leave.isVisible = role != null && role != "OWNER"
+        }
+
+        var displayed: WorkspaceMembers? = null
+        var pending = emptyList<WorkspacePendingInvitation>()
+        var refreshGeneration = 0
+        var pendingGeneration = 0
+        val cancelling = mutableSetOf<String>()
+        lateinit var refresh: () -> Unit
+        lateinit var confirmCancel: (WorkspacePendingInvitation) -> Unit
+        fun isShared(list: WorkspaceMembers) = list.role != "OWNER" || list.members.any { it.uid != session.uid }
+        fun canManage() = attached() && displayed?.role == "OWNER"
+
+        fun updateVisibility() {
+            val list = displayed
+            showMembership(list?.role, list != null && (isShared(list) || pending.isNotEmpty()))
+        }
+
+        fun displayPending(items: List<WorkspacePendingInvitation>) {
+            pending = items
+            binding.pendingMembers.removeAllViews()
+            for (invite in items) {
+                val row = ViewPendingCategoryInvitationBinding.inflate(activity.layoutInflater, binding.pendingMembers, false)
+                row.details.text = activity.getString(R.string.category_members_pending_entry, invite.email, roleLabel(invite.role))
+                row.cancel.contentDescription = activity.getString(R.string.category_members_cancel_invitation_for, invite.email)
+                row.cancel.isEnabled = invite.id !in cancelling
+                row.cancel.alpha = if (row.cancel.isEnabled) 1f else 0.4f
+                row.cancel.setOnClickListener { confirmCancel(invite) }
+                binding.pendingMembers.addView(row.root)
+            }
+            updateVisibility()
+        }
+
+        fun refreshPending() {
+            if (!canManage()) return
+            val generation = ++pendingGeneration
+            repository.refreshPendingInvitations(category) { result ->
+                if (!canManage() || generation != pendingGeneration) return@refreshPendingInvitations
+                val warning = activity.getString(R.string.category_members_pending_unavailable)
+                result.fold({ items ->
+                    displayPending(items)
+                    if (binding.status.text == warning) setStatus(null)
+                }, { failure ->
+                    if (failure.businessCode() == "PERMISSION_DENIED") displayPending(emptyList())
+                    else setStatus(warning, error = true)
+                })
+            }
+        }
+
+        fun loadPending(synced: Boolean) {
+            val generation = pendingGeneration
+            repository.cachedPendingInvitations(category) { result ->
+                if (!canManage() || generation != pendingGeneration) return@cachedPendingInvitations
+                result.onSuccess(::displayPending)
+                if (synced) refreshPending()
+            }
+        }
+
+        fun invitationsChanged() {
+            changed()
+            refreshPending()
+        }
+
+        fun display(list: WorkspaceMembers) {
+            val previous = displayed
+            displayed = list
+            if (previous?.role == "OWNER" && list.role != "OWNER") {
+                pendingGeneration++
+                displayPending(emptyList())
+            } else updateVisibility()
+            setStatus(activity.getString(R.string.category_members_empty)
+                .takeIf { isShared(list) && list.members.isEmpty() && pending.isEmpty() })
+            if (list.role == "OWNER" && (previous?.role != "OWNER" || !previous.synced && list.synced)) {
+                loadPending(list.synced)
+            }
+            if (previous == list) return
+            binding.members.removeAllViews()
+            val sorted = list.members.sortedWith(compareBy<WorkspaceMember> { it.role != "OWNER" }.thenBy { it.name })
+            for (member in sorted) {
+                val name = member.name.ifBlank { activity.getString(R.string.category_members_unknown) }
+                val row = TextView(activity).apply {
+                    text = activity.getString(R.string.category_members_entry, name, roleLabel(member.role))
+                    textSize = 15f
+                    setTextColor(ContextCompat.getColor(activity, R.color.ink))
+                    gravity = Gravity.CENTER_VERTICAL
+                    minHeight = dp(48)
+                    setPadding(dp(8), dp(10), dp(8), dp(10))
+                    if (list.role == "OWNER" && member.role != "OWNER") {
+                        setBackgroundResource(R.drawable.bg_task_delete_cancel)
+                        isFocusable = true
+                        setOnClickListener {
+                            if (!canManage()) return@setOnClickListener
+                            memberActions(category, member, name, ::canManage, ::showFeedback) {
+                                changed()
+                                if (attached()) refresh()
                             }
                         }
-                    }.show()
-            }, ::error)
+                    }
+                }
+                binding.members.addView(row, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(4) })
+            }
+        }
+
+        refresh = {
+            val generation = ++refreshGeneration
+            repository.refreshMembers(category) { result ->
+                if (!attached() || generation != refreshGeneration) return@refreshMembers
+                result.fold(::display) { failure ->
+                    val code = failure.businessCode()
+                    if (code == "PERMISSION_DENIED") {
+                        displayed = null
+                        pendingGeneration++
+                        binding.members.removeAllViews()
+                        displayPending(emptyList())
+                    }
+                    val cached = displayed
+                    if (cached == null) setStatus(reason(code), error = true)
+                    else if (isShared(cached)) setStatus(activity.getString(R.string.category_members_cached))
+                }
+            }
+        }
+
+        confirmCancel = confirm@{ invite ->
+            if (!canManage() || invite.id in cancelling) return@confirm
+            dialogs.confirm(
+                activity.getString(R.string.category_members_cancel_invitation_title),
+                activity.getString(R.string.category_members_cancel_invitation_message, invite.email),
+                Action(activity.getString(R.string.category_members_cancel_invitation), Tone.DESTRUCTIVE) {
+                    val currentInvite = pending.firstOrNull { it.id == invite.id } ?: return@Action
+                    if (!canManage() || !cancelling.add(invite.id)) return@Action
+                    displayPending(pending)
+                    setStatus(null)
+                    repository.cancelPendingInvitation(category, currentInvite) { result ->
+                        cancelling.remove(invite.id)
+                        if (!canManage()) return@cancelPendingInvitation
+                        result.fold({
+                            displayPending(pending.filterNot { it.id == invite.id })
+                            setStatus(activity.getString(R.string.category_members_invitation_cancelled))
+                            invitationsChanged()
+                        }, { failure ->
+                            displayPending(pending)
+                            val code = failure.businessCode()
+                            setStatus(reason(code), error = true)
+                            if (code in setOf("INVITATION_NOT_PENDING", "INVITATION_EXPIRED", "REVISION_CONFLICT", "NOT_FOUND", "PERMISSION_DENIED")) {
+                                refreshPending()
+                                refresh()
+                            }
+                        })
+                    }
+                },
+                cancel = activity.getString(R.string.category_members_keep_invitation)
+            )
+        }
+
+        fun showInvite() {
+            if (!canManage()) return
+            repository.sharing(cid) { ready ->
+                if (!canManage()) return@sharing
+                if (ready.getOrDefault(false)) invite(category, ::invitationsChanged, ::canManage, ::showFeedback)
+                else setStatus(activity.getString(R.string.category_members_wait_for_sync))
+            }
+        }
+        binding.invite.setOnClickListener { showInvite() }
+        shareButton.setOnClickListener { showInvite() }
+        binding.leave.setOnClickListener {
+            if (!attached() || displayed?.role == "OWNER") return@setOnClickListener
+            dialogs.confirm("Rời danh mục?", "Bạn sẽ mất quyền truy cập " + category.name + ".",
+                Action("Rời danh mục", Tone.DESTRUCTIVE) {
+                    if (attached()) {
+                        command("LEAVE", mapOf("category_id" to cid), "Đã rời danh mục.", ::showFeedback) {
+                            if (attached()) close()
+                            changed()
+                        }
+                    }
+                })
+        }
+
+        if (category.role != "OWNER") {
+            binding.panel.isVisible = true
+            setStatus(activity.getString(R.string.category_members_loading))
+        }
+        repository.cachedMembers(category) { result ->
+            if (!attached()) return@cachedMembers
+            result.onSuccess(::display)
+            if (result.getOrNull()?.synced ?: (category.revision > 0)) refresh()
+            else result.onFailure {
+                showMembership(null, false)
+                setStatus(reason(it.businessCode()), error = true)
+            }
         }
     }
 
-    fun members(category: WorkspaceCategory, changed: () -> Unit) {
-        val cid = category.ref.id
-        if (category.ref.workspace.uid != repository.currentUid) return
-        repository.online({ outcome ->
-            if (!active) return@online
-            outcome.fold({ snapshot ->
-                val profiles = snapshot.profiles.associate { it.string("uid") to it.string("full_name") }
-                val actions = linkedMapOf<String, () -> Unit>()
-                for (member in snapshot.groups["MEMBER"].orEmpty()) {
-                    val name = profiles[member.string("user_uid")] ?: "Thành viên"
-                    val role = member.string("role")
-                    val label = "$name · " + roleLabel(role)
-                    val uniqueLabel = if (label in actions) "$label (" + member.string("user_uid").takeLast(5) + ")" else label
-                    actions[uniqueLabel] = {
-                        if (snapshot.role == "OWNER" && role != "OWNER") memberActions(category, member, name, changed)
-                        else toast(roleLabel(role))
-                    }
-                }
-                if (snapshot.role == "OWNER") {
-                    actions["Mời theo email"] = {
-                        repository.sharing(cid) { ready ->
-                            if (ready.getOrDefault(false)) invite(category, changed)
-                            else toast("Hãy chờ danh mục đồng bộ xong trước khi mời.")
-                        }
-                    }
-                    actions["Lời mời đã gửi"] = { sent(category, changed) }
-                } else actions["Rời danh mục"] = {
-                    AlertDialog.Builder(activity).setTitle("Rời danh mục?")
-                        .setMessage("Bạn sẽ mất quyền truy cập " + category.name + ".")
-                        .setNegativeButton("Hủy", null).setPositiveButton("Rời danh mục") { _, _ ->
-                            command("LEAVE", mapOf("category_id" to cid)) {
-                                toast("Đã rời danh mục.")
-                                changed()
-                            }
-                        }.show()
-                }
-                choose(category.label, actions)
-            }, ::error)
-        }) { it.snapshot(cid) }
-    }
-
-    private fun memberActions(category: WorkspaceCategory, member: Row, name: String, changed: () -> Unit) {
-        val fields = mapOf("category_id" to category.ref.id, "target_uid" to member["user_uid"], "base_revision" to member["revision"])
-        val nextRole = if (member["role"] == "EDITOR") "VIEWER" else "EDITOR"
+    private fun memberActions(category: WorkspaceCategory, member: WorkspaceMember, name: String,
+                              canManage: () -> Boolean, feedback: (String, Boolean) -> Unit, changed: () -> Unit) {
+        val fields = mapOf("category_id" to category.ref.id, "target_uid" to member.uid, "base_revision" to member.revision)
+        val nextRole = if (member.role == "EDITOR") "VIEWER" else "EDITOR"
         choose(name, linkedMapOf(
-            "Đổi thành " + roleLabel(nextRole) to { command("ROLE", fields + ("role" to nextRole)) { changed(); members(category, changed) } },
+            "Đổi thành " + roleLabel(nextRole) to {
+                if (canManage()) command("ROLE", fields + ("role" to nextRole), feedback = feedback, success = changed)
+            },
             "Gỡ thành viên" to {
-                AlertDialog.Builder(activity).setTitle("Gỡ $name?")
-                    .setNegativeButton("Hủy", null).setPositiveButton("Gỡ") { _, _ ->
-                        command("REMOVE_MEMBER", fields) { changed(); members(category, changed) }
-                    }.show()
+                if (canManage()) {
+                    dialogs.confirm("Gỡ $name?", "$name sẽ mất quyền truy cập " + category.name + ".",
+                        Action("Gỡ", Tone.DESTRUCTIVE) {
+                            if (canManage()) command("REMOVE_MEMBER", fields, feedback = feedback, success = changed)
+                        })
+                }
             }
         ))
     }
 
-    private fun invite(category: WorkspaceCategory, changed: () -> Unit) {
-        if (!active) return
-        val email = EditText(activity).apply {
-            setSingleLine()
-            hint = "Email người nhận"
-            inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS
+    private fun invite(category: WorkspaceCategory, changed: () -> Unit, canManage: () -> Boolean,
+                       feedback: (String, Boolean) -> Unit) {
+        if (!canManage()) return
+        dialogs.form(
+            title = "Mời vào " + category.name,
+            label = "Email người nhận",
+            submitLabel = "Chọn quyền",
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS
+        ) { email, finish ->
+            if (!canManage()) {
+                finish(null)
+                return@form
+            }
+            val address = email.trim()
+            if (!android.util.Patterns.EMAIL_ADDRESS.matcher(address).matches()) {
+                finish("Địa chỉ email không hợp lệ.")
+                return@form
+            }
+            finish(null)
+            choose("Quyền của $address", linkedMapOf(
+                "Chỉnh sửa" to { if (canManage()) sendInvite(category, address, "EDITOR", changed, feedback) },
+                "Chỉ xem" to { if (canManage()) sendInvite(category, address, "VIEWER", changed, feedback) }
+            ))
         }
-        AlertDialog.Builder(activity).setTitle("Mời vào " + category.name).setView(email)
-            .setNegativeButton("Hủy", null).setPositiveButton("Chọn quyền") { _, _ ->
-                val address = email.text.toString().trim()
-                if (!android.util.Patterns.EMAIL_ADDRESS.matcher(address).matches()) {
-                    toast("Địa chỉ email không hợp lệ.")
-                    return@setPositiveButton
-                }
-                choose("Quyền của $address", linkedMapOf(
-                    "Chỉnh sửa" to { sendInvite(category, address, "EDITOR", changed) },
-                    "Chỉ xem" to { sendInvite(category, address, "VIEWER", changed) }
-                ))
-            }.show()
     }
 
-    private fun sendInvite(category: WorkspaceCategory, email: String, role: String, changed: () -> Unit) {
-        command("INVITE", mapOf("category_id" to category.ref.id, "email" to email, "role" to role, "invitation_id" to uuid())) {
-            toast("Đã gửi lời mời trong ứng dụng.")
-            changed()
-        }
+    private fun sendInvite(category: WorkspaceCategory, email: String, role: String, changed: () -> Unit,
+                           feedback: (String, Boolean) -> Unit) {
+        command("INVITE", mapOf("category_id" to category.ref.id, "email" to email, "role" to role, "invitation_id" to uuid()),
+            "Đã gửi lời mời trong ứng dụng.", feedback, changed)
     }
 
     fun invitations() {
         if (!WorkspaceSync.configured) return showBackendUnavailable()
         if (auth.user?.emailVerified != true) {
-            AlertDialog.Builder(activity).setTitle("Xác minh email")
-                .setMessage("Xác minh địa chỉ email để xem và nhận lời mời.")
-                .setNegativeButton("Đóng", null).setPositiveButton("Xác minh") { _, _ ->
+            dialogs.show("Xác minh email", "Xác minh địa chỉ email để xem và nhận lời mời.",
+                primary = Action("Xác minh") {
                     activity.startActivity(Intent(activity, RegisterActivity::class.java)
                         .putExtra(RegisterActivity.EXTRA_VERIFY_ONLY, true))
-                }.show()
+                })
             return
         }
-        listInvites(null, {})
-    }
-
-    private fun sent(category: WorkspaceCategory, changed: () -> Unit) = listInvites(category, changed)
-
-    private fun listInvites(category: WorkspaceCategory?, changed: () -> Unit) {
-        val fields = category?.let { mapOf("category_id" to it.ref.id) }.orEmpty()
         repository.online({ result ->
             if (!active) return@online
             result.fold({ rows ->
                 val actions = rows.map { row ->
                     val title = row.string("category_name") + " · " + roleLabel(row.string("offered_role")) +
                         " · " + inviteStatus(row.string("status"))
-                    title to { invitation(row, category, changed) }
+                    title to { if (active) invitation(row) }
                 }
-                choices(if (category == null) "Lời mời danh mục" else "Lời mời đã gửi", actions)
+                choices("Lời mời danh mục", actions)
             }, ::error)
-        }) { it.pages(if (category == null) "INBOX" else "SENT", fields) }
+        }) { it.pages("INBOX") }
     }
 
-    private fun invitation(row: Row, category: WorkspaceCategory?, changed: () -> Unit) {
+    private fun invitation(row: Row) {
         val fields = mapOf("invitation_id" to row["id"], "category_id" to row["category_id"], "base_revision" to row["revision"])
         val end = Instant.ofEpochMilli(row.long("expires_at")).atZone(ZoneId.systemDefault())
             .format(DateTimeFormatter.ofPattern("dd/MM/yyyy HH:mm"))
         val note = roleLabel(row.string("offered_role")) + " · " + inviteStatus(row.string("status")) + "\nHạn: $end"
-        val who = if (category == null) row["inviter_name"] else row["invitee_email_key"]
-        val dialog = AlertDialog.Builder(activity).setTitle(row.string("category_name")).setMessage("$who\n$note")
-            .setNeutralButton("Đóng", null)
-        if (row["status"] == "PENDING") {
-            if (category == null) {
-                dialog.setPositiveButton("Chấp nhận") { _, _ -> command("ACCEPT", fields) {
-                    toast("Đã tham gia danh mục. Danh mục sẽ xuất hiện sau khi đồng bộ.")
-                    changed()
-                } }.setNegativeButton("Từ chối") { _, _ -> command("DECLINE", fields) { invitations() } }
-            } else dialog.setPositiveButton("Hủy lời mời") { _, _ -> command("CANCEL", fields) { sent(category, changed) } }
+        val title = row.string("category_name")
+        val message = "${row["inviter_name"]}\n$note"
+        if (row["status"] != "PENDING") {
+            dialogs.show(title, message)
+        } else {
+            dialogs.show(title, message,
+                primary = Action("Chấp nhận") {
+                    command("ACCEPT", fields, "Đã tham gia danh mục. Danh mục sẽ xuất hiện sau khi đồng bộ.") {}
+                },
+                secondary = Action("Từ chối", Tone.DESTRUCTIVE) { command("DECLINE", fields) { invitations() } },
+                extra = Action("Đóng", Tone.NEUTRAL) {})
         }
-        dialog.show()
     }
 
     fun conflicts(changed: () -> Unit) {
@@ -190,33 +364,38 @@ internal class SharingDialogs(private val activity: HomeActivity, private val re
                     val title = server?.get("title") ?: server?.get("name") ?: "Thay đổi trong danh mục"
                     (title.toString() + " · " + reason(row.string("last_error"))) to {
                         val details = server?.filterKeys { it in setOf("title", "name", "description", "priority", "due_at", "is_done") }
-                        val builder = AlertDialog.Builder(activity).setTitle("Xem thay đổi")
-                            .setMessage("Bản hiện tại\n" + (details?.let { JSONObject(it).toString(2) } ?: "Không còn dữ liệu") +
-                                "\n\nThay đổi của bạn\n" + (draft ?: "Xóa vĩnh viễn"))
-                            .setNegativeButton("Đóng", null).setPositiveButton("Bỏ thay đổi") { _, _ ->
+                        dialogs.show(
+                            title = "Xem thay đổi",
+                            message = "Bản hiện tại\n" + (details?.let { JSONObject(it).toString(2) } ?: "Không còn dữ liệu") +
+                                "\n\nThay đổi của bạn\n" + (draft ?: "Xóa vĩnh viễn"),
+                            primary = if (row["default_category_pending"] == true) null else Action("Bỏ thay đổi", Tone.DESTRUCTIVE) {
                                 repository.discard(row.string("operation_id")) { if (it.isSuccess) changed() else error(it.exceptionOrNull()) }
-                            }
-                        if (draft != null) builder.setNeutralButton("Sao chép bản nháp") { _, _ ->
-                            activity.getSystemService(android.content.ClipboardManager::class.java)
-                                .setPrimaryClip(android.content.ClipData.newPlainText("Bản nháp", draft))
-                            toast("Đã sao chép. Bạn có thể mở bản hiện tại và sửa lại.")
-                        }
-                        builder.show()
-                        Unit
+                            },
+                            extra = draft?.let {
+                                Action("Sao chép bản nháp", Tone.NEUTRAL) {
+                                    activity.getSystemService(android.content.ClipboardManager::class.java)
+                                        .setPrimaryClip(android.content.ClipData.newPlainText("Bản nháp", it))
+                                    dialogs.notice("Đã sao chép. Bạn có thể mở bản hiện tại và sửa lại.")
+                                }
+                            })
                     }
                 })
             }, ::error)
         }
     }
 
-    private fun command(kind: String, data: Row, success: () -> Unit) {
+    private fun command(kind: String, data: Row, message: String? = null,
+                        feedback: (String, Boolean) -> Unit = dialogs::notice, success: () -> Unit) {
         val request = data + mapOf("kind" to kind, "operation_id" to uuid(), "client_occurred_at" to System.currentTimeMillis())
         repository.online({ result ->
             if (!active) return@online
             result.fold({ value ->
-                if (value["pending"] == true) toast("Máy chủ đang dọn dữ liệu liên quan.")
                 success()
-            }, ::error)
+                val pending = "Máy chủ đang dọn dữ liệu liên quan.".takeIf { value["pending"] == true }
+                listOfNotNull(message, pending).takeIf { it.isNotEmpty() }?.let {
+                    feedback(it.joinToString(" "), false)
+                }
+            }, { failure -> feedback(reason(failure.businessCode()), true) })
         }) { it.call(request) }
     }
 
@@ -234,13 +413,14 @@ internal class SharingDialogs(private val activity: HomeActivity, private val re
         else -> "Đã hết hạn"
     }
 
-    fun showBackendUnavailable() = toast(reason("BACKEND_NOT_CONFIGURED"))
+    fun showBackendUnavailable() = dialogs.notice(reason("BACKEND_NOT_CONFIGURED"), error = true)
 
     private fun reason(code: String) = when (code) {
         "BACKEND_NOT_CONFIGURED" -> "Bản APK này chưa được cấu hình máy chủ đồng bộ."
         "REVISION_CONFLICT" -> "Xung đột với bản trên máy chủ"
         "PERMISSION_DENIED" -> "Bạn không có quyền thực hiện thao tác này"
         "INVITATION_EXPIRED" -> "Lời mời đã hết hạn"
+        "INVITATION_NOT_PENDING" -> "Lời mời đã được xử lý"
         "INVITATION_ALREADY_PENDING" -> "Đã có một lời mời đang chờ"
         "ALREADY_ACTIVE_MEMBER" -> "Người này đã là thành viên"
         "NAME_ALREADY_EXISTS" -> "Tên danh mục đã tồn tại"
@@ -249,19 +429,12 @@ internal class SharingDialogs(private val activity: HomeActivity, private val re
         else -> "Không thể hoàn tất thao tác"
     }
 
-    private fun error(error: Throwable?) { toast(reason(error?.businessCode().orEmpty())) }
-    private fun toast(text: String) {
-        if (active) Toast.makeText(activity, text, Toast.LENGTH_LONG).show()
-    }
+    private fun error(error: Throwable?) = dialogs.notice(reason(error?.businessCode().orEmpty()), error = true)
+
+    private fun dp(value: Int) = (value * activity.resources.displayMetrics.density).toInt()
 
     private fun choose(title: String, options: Map<String, () -> Unit>) =
         choices(title, options.entries.map { it.key to it.value })
 
-    private fun choices(title: String, options: List<Pair<String, () -> Unit>>) {
-        if (!active) return
-        val builder = AlertDialog.Builder(activity).setTitle(title).setNegativeButton("Đóng", null)
-        if (options.isEmpty()) builder.setMessage("Không có mục nào.")
-        else builder.setItems(options.map { it.first }.toTypedArray()) { _, index -> options[index].second() }
-        builder.show()
-    }
+    private fun choices(title: String, options: List<Pair<String, () -> Unit>>) = dialogs.choices(title, options)
 }
