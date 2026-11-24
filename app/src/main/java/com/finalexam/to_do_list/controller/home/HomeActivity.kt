@@ -4,7 +4,6 @@ import android.app.AlertDialog
 import android.app.DatePickerDialog
 import android.app.TimePickerDialog
 import android.content.Intent
-import android.content.IntentFilter
 import android.content.res.ColorStateList
 import android.graphics.Color
 import android.graphics.Bitmap
@@ -21,7 +20,6 @@ import android.view.View
 import android.widget.*
 import com.finalexam.to_do_list.R
 import com.finalexam.to_do_list.controller.WorkspaceActivity
-import com.finalexam.to_do_list.controller.auth.LoginActivity
 import com.finalexam.to_do_list.controller.auth.RegisterActivity
 import com.finalexam.to_do_list.controller.home.WorkspaceDialogs.Action
 import com.finalexam.to_do_list.controller.home.WorkspaceDialogs.Tone
@@ -33,8 +31,11 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
 import kotlinx.coroutines.launch
-import com.finalexam.to_do_list.model.repository.GuestProfilePreferences
+import com.finalexam.to_do_list.MainActivity
+import com.finalexam.to_do_list.model.repository.AccountCache
+import com.finalexam.to_do_list.model.repository.AccountSession
 import com.finalexam.to_do_list.util.TaskFilter
+import com.finalexam.to_do_list.util.includesHomeTask
 import com.finalexam.to_do_list.util.TaskDefaults
 import com.finalexam.to_do_list.view.ChipFlowLayout
 import java.time.Instant
@@ -43,8 +44,6 @@ import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.Calendar
 import java.util.Locale
-import java.io.File
-import java.io.FileOutputStream
 import android.Manifest
 import android.content.pm.PackageManager
 import android.os.Build
@@ -56,7 +55,6 @@ import android.widget.Toast
 import com.finalexam.to_do_list.notification.NotificationPreferences
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
-import com.finalexam.to_do_list.notification.TaskReminderReceiver
 
 open class HomeActivity : WorkspaceActivity() {
     private lateinit var binding: ActivityHomeBinding
@@ -67,8 +65,10 @@ open class HomeActivity : WorkspaceActivity() {
     private var category: CategoryRef? = null
     private var categoryLabel: String? = null
     private var categoryWritable = true
+    private var categoryOptions = emptyList<WorkspaceCategory>()
     private val workspaceDialogs by lazy { WorkspaceDialogs(this) }
     private val sharing by lazy { SharingDialogs(this, repository, workspaceDialogs) }
+    private val categorySettings by lazy { CategorySettingsDialog(this, repository, workspaceDialogs, sharing) }
     private var selectedDate: LocalDate? = null
     private var selectedNavigation = 0
     private var calendarRefresh: (() -> Unit)? = null
@@ -80,39 +80,38 @@ open class HomeActivity : WorkspaceActivity() {
     private var returnFromNotification: (() -> Unit)? = null
     private var searchRefresh: (() -> Unit)? = null
     private var profileAvatarImage: ImageView? = null
-    private val reminderEventReceiver = object : android.content.BroadcastReceiver() {
-        override fun onReceive(context: android.content.Context, intent: Intent) {
-            val title = intent.getStringExtra(TaskReminderReceiver.EXTRA_TASK_TITLE) ?: return
-            updateNotificationBadge()
-            AlertDialog.Builder(this@HomeActivity)
-                .setTitle("Đến hạn công việc")
-                .setMessage("Công việc \"$title\" đã đến thời hạn.")
-                .setPositiveButton("Đã rõ", null)
-                .show()
-        }
-    }
-    private var reminderEventReceiverRegistered = false
+    private var session: AccountSession? = null
     private val profileAvatarPicker = registerForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
-        if (uri != null) {
-            runCatching { contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION) }
-            GuestProfilePreferences.saveAvatar(this, uri.toString())
-            profileAvatarImage?.apply { setImageURI(uri); visibility = View.VISIBLE }
+        if (uri != null) saveAvatar { file ->
+            checkNotNull(contentResolver.openInputStream(uri)).use { source ->
+                file.outputStream().use { source.copyTo(it) }
+            }
         }
     }
     private val profileCamera = registerForActivityResult(ActivityResultContracts.TakePicturePreview()) { bitmap ->
-        if (bitmap != null) {
-            runCatching {
-                val avatarFile = File(filesDir, "profile-avatar.jpg")
-                FileOutputStream(avatarFile).use { output ->
-                    bitmap.compress(Bitmap.CompressFormat.JPEG, 92, output)
-                }
-                val uri = android.net.Uri.fromFile(avatarFile)
-                GuestProfilePreferences.saveAvatar(this, uri.toString())
-                profileAvatarImage?.apply { setImageURI(uri); visibility = View.VISIBLE }
-            }.onFailure {
-                Toast.makeText(this, "Không thể lưu ảnh vừa chụp.", Toast.LENGTH_LONG).show()
-            }
+        if (bitmap != null) saveAvatar { file ->
+            file.outputStream().use { check(bitmap.compress(Bitmap.CompressFormat.JPEG, 92, it)) }
         }
+    }
+
+    private fun avatar() = session?.let { AccountCache(this).avatar(it.uid) }?.takeIf { it.isFile }
+
+    private fun saveAvatar(write: (java.io.File) -> Unit) {
+        val expected = session ?: return
+        if (AccountSession.current(this) !== expected) return
+        val file = AccountCache(this).avatar(expected.uid)
+        runCatching {
+            AccountSession.access(this, expected) {
+                file.parentFile?.mkdirs()
+                val pending = java.io.File(file.parentFile, file.name + ".tmp")
+                try {
+                    write(pending)
+                    check(pending.renameTo(file))
+                } finally { pending.delete() }
+            }
+        }.onSuccess {
+            profileAvatarImage?.apply { setImageURI(null); setImageURI(android.net.Uri.fromFile(file)); visibility = View.VISIBLE }
+        }.onFailure { toast("Không thể lưu ảnh đại diện.") }
     }
 
     private fun launchProfileAvatarPicker() {
@@ -150,6 +149,8 @@ open class HomeActivity : WorkspaceActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        session = AccountSession.current(this)
+        if (session == null) { openEntrance(); return }
         binding = ActivityHomeBinding.inflate(layoutInflater)
         setContentView(binding.root)
         applyInsets(binding.root)
@@ -177,6 +178,7 @@ open class HomeActivity : WorkspaceActivity() {
         selectedDate = savedInstanceState?.getString("selectedDate")?.let(LocalDate::parse)
         selectedNavigation = savedInstanceState?.getInt("navigation") ?: 0
         binding.addTask.setOnClickListener { editTask(null) }
+        binding.categoryPicker.setOnClickListener { showHomeCategoryPicker() }
         binding.search.setOnClickListener { showSearchScreen() }
         binding.query.addTextChangedListener(object : TextWatcher {
             override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
@@ -206,6 +208,7 @@ open class HomeActivity : WorkspaceActivity() {
 
     override fun onResume() {
         super.onResume()
+        if (!isFinishing && (session == null || AccountSession.current(this) !== session)) { openEntrance(); return }
 
         if (::repository.isInitialized) {
             updateNotificationBadge()
@@ -215,23 +218,8 @@ open class HomeActivity : WorkspaceActivity() {
         }
     }
 
-    override fun onStart() {
-        super.onStart()
-        ContextCompat.registerReceiver(
-            this,
-            reminderEventReceiver,
-            IntentFilter(TaskReminderReceiver.ACTION_REMINDER),
-            ContextCompat.RECEIVER_NOT_EXPORTED
-        )
-        reminderEventReceiverRegistered = true
-    }
-
     override fun onStop() {
-        if (reminderEventReceiverRegistered) {
-            unregisterReceiver(reminderEventReceiver)
-            reminderEventReceiverRegistered = false
-        }
-        WorkspaceSync.unwatch()
+        if (session != null && AccountSession.current(this) === session) WorkspaceSync.unwatch()
         super.onStop()
     }
 
@@ -271,17 +259,52 @@ open class HomeActivity : WorkspaceActivity() {
     private fun reload() {
         loading = true
         failed = false
-        repository.load { result ->
-            if (isFinishing || isDestroyed) return@load
+        repository.loadHome { result ->
+            if (isFinishing || isDestroyed) return@loadHome
             loading = false
-            result.fold({ tasks = it }, { failed = true; toast("Không thể đọc dữ liệu. Chạm thông báo để thử lại.") })
+            result.fold(::applyHomeContent, { failed = true; toast("Không thể đọc dữ liệu. Chạm thông báo để thử lại.") })
             render()
         }
     }
 
+    private fun applyHomeContent(content: HomeContent) {
+        tasks = content.tasks
+        updateCategoryOptions(content.categories)
+    }
+
+    private fun updateCategoryOptions(options: List<WorkspaceCategory>) {
+        categoryOptions = options
+        val selected = category ?: return
+        selectHomeCategory(options.firstOrNull { it.ref == selected })
+    }
+
+    private fun selectHomeCategory(item: WorkspaceCategory?) {
+        category = item?.ref
+        categoryLabel = item?.label
+        categoryWritable = item?.role != "VIEWER"
+    }
+
+    private fun showHomeCategoryPicker() {
+        val options = categoryOptions
+        val popup = PopupMenu(this, binding.categoryPicker, Gravity.END)
+        popup.menu.add(0, 0, 0, R.string.home_category_all).isChecked = category == null
+        options.forEachIndexed { index, item ->
+            val id = index + 1
+            popup.menu.add(0, id, id, item.label).isChecked = item.ref == category
+        }
+        popup.menu.setGroupCheckable(0, true, true)
+        popup.setOnMenuItemClickListener { item ->
+            val selected = options.getOrNull(item.itemId - 1)?.ref
+            selectHomeCategory(categoryOptions.firstOrNull { it.ref == selected })
+            render()
+            true
+        }
+        popup.show()
+    }
+
     private fun render() {
         val today = LocalDate.now(zone)
-        binding.greeting.text = "Xin chào, " + (auth.user?.displayName?.takeIf { it.isNotBlank() } ?: GuestProfilePreferences.name(this) ?: "bạn")
+        binding.greeting.text = "Xin chào, " + (auth.user?.displayName?.takeIf { it.isNotBlank() } ?: "bạn")
         binding.date.text = today.format(DateTimeFormatter.ofPattern("EEEE, dd/MM/yyyy", Locale.forLanguageTag("vi-VN")))
         val todays = tasks.filter { it.dueAt == null || Instant.ofEpochMilli(it.dueAt).atZone(zone).toLocalDate() == today }
         val completed = todays.count { it.done }
@@ -301,20 +324,21 @@ open class HomeActivity : WorkspaceActivity() {
             binding.filters.addView(button, LinearLayout.LayoutParams(0, -1, 1f))
         }
         binding.addTask.visibility = if (category != null && !categoryWritable) View.GONE else View.VISIBLE
+        val categoryName = categoryLabel ?: getString(R.string.home_category_all)
+        binding.categoryPicker.text = categoryName
+        binding.categoryPicker.contentDescription = getString(R.string.home_category_picker, categoryName)
         val query = binding.query.text.toString().trim()
         val visible = tasks.filter { task ->
-            val dateMatches = if (category != null) true else selectedDate?.let { date -> !task.done && task.dueAt?.let { Instant.ofEpochMilli(it).atZone(zone).toLocalDate() == date } == true }
-                ?: filter.includes(task.done, task.dueAt, today, zone)
-            dateMatches && (category == null || task.categoryRef() == category) &&
+            filter.includesHomeTask(task, category, selectedDate, today, zone) &&
                 (query.isEmpty() || task.title.contains(query, true) || task.description.contains(query, true))
         }
-        binding.sectionTitle.text = category?.let { categoryLabel } ?: selectedDate?.format(DateTimeFormatter.ofPattern("dd/MM/yyyy")) ?: when (filter) {
+        binding.sectionTitle.text = selectedDate?.format(DateTimeFormatter.ofPattern("dd/MM/yyyy")) ?: when (filter) {
             TaskFilter.TODAY -> "Công việc hôm nay"
             TaskFilter.WEEK -> "Công việc 7 ngày tới"
             TaskFilter.OVERDUE -> "Công việc quá hạn"
             TaskFilter.DONE -> "Đã hoàn thành"
         }
-        binding.count.text = "${visible.size} công việc"
+        binding.count.text = getString(R.string.home_task_count, visible.size)
         binding.taskList.removeAllViews()
         visible.forEach { addRow(it) }
         binding.empty.visibility = if (visible.isEmpty()) View.VISIBLE else View.GONE
@@ -322,6 +346,7 @@ open class HomeActivity : WorkspaceActivity() {
             loading -> "Đang tải công việc…"
             failed -> "Không thể đọc dữ liệu.\nChạm để thử lại."
             query.isNotEmpty() -> "Không tìm thấy công việc phù hợp."
+            !categoryWritable -> "Chưa có công việc nào."
             else -> "Chưa có công việc nào.\nNhấn + để bắt đầu ngày của bạn."
         }
         binding.addTask.isEnabled = !loading && !failed
@@ -367,7 +392,7 @@ open class HomeActivity : WorkspaceActivity() {
             date.toLocalDate() == LocalDate.now(zone) -> "Hôm nay, " + date.format(DateTimeFormatter.ofPattern("HH:mm"))
             else -> date.format(DateTimeFormatter.ofPattern("dd/MM, HH:mm"))
         }
-        return "$due · ${task.category} · ${task.sourceIcon} ${task.syncLabel}"
+        return listOf(due, task.category, "${task.sourceIcon} ${task.syncLabel}").filter { it.isNotBlank() }.joinToString(" · ")
     }
 
     private fun buildNavigation() {
@@ -378,7 +403,7 @@ open class HomeActivity : WorkspaceActivity() {
                 contentDescription = name; isClickable = true; isFocusable = true; isSelected = selectedNavigation == index
                 setOnClickListener {
                     when (index) {
-                        0 -> { selectedNavigation = 0; category = null; selectedDate = null; render() }
+                        0 -> showHomeScreen()
                         1 -> selectCalendarDate()
                         2 -> selectCategory()
                         3 -> showPersonalScreen()
@@ -395,9 +420,9 @@ open class HomeActivity : WorkspaceActivity() {
         showCalendarScreen(selectedDate ?: LocalDate.now(zone))
     }
 
-    private fun showHomeScreen() {
+    private fun showHomeScreen(item: WorkspaceCategory? = null) {
         selectedNavigation = 0
-        category = null
+        selectHomeCategory(item)
         selectedDate = null
         calendarRefresh = null
         searchRefresh = null
@@ -524,7 +549,7 @@ open class HomeActivity : WorkspaceActivity() {
                 val details = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(4), dp(2), 0, 0) }
                 details.addView(label(task.title, 15f, ink, true))
                 val dueLabel = task.dueAt?.let { Instant.ofEpochMilli(it).atZone(zone).format(DateTimeFormatter.ofPattern("dd/MM, HH:mm")) } ?: "Không có hạn"
-                details.addView(label("$dueLabel · ${task.category} · ${task.sourceIcon} ${task.syncLabel}", 12f, if (overdue) Color.rgb(205, 72, 85) else muted).apply { setPadding(0, dp(9), 0, dp(8)) })
+                details.addView(label(listOf(dueLabel, task.category, "${task.sourceIcon} ${task.syncLabel}").filter { it.isNotBlank() }.joinToString(" · "), 12f, if (overdue) Color.rgb(205, 72, 85) else muted).apply { setPadding(0, dp(9), 0, dp(8)) })
                 val badges = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
                 val badgeFill = when (task.priority) { 3 -> Color.rgb(252, 233, 236); 1 -> Color.rgb(231, 244, 237); else -> Color.rgb(255, 243, 220) }
                 val badgeText = when (task.priority) { 3 -> Color.rgb(190, 66, 82); 1 -> Color.rgb(57, 133, 99); else -> Color.rgb(157, 111, 35) }
@@ -658,7 +683,7 @@ open class HomeActivity : WorkspaceActivity() {
                     card.addView(check, LinearLayout.LayoutParams(dp(38), dp(40)))
                     val details = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(4), dp(2), 0, 0) }
                     details.addView(label(task.title, 15f, ink, true))
-                    details.addView(label("${selected.format(DateTimeFormatter.ofPattern("dd/MM"))} · ${task.category}", 12f, muted).apply { setPadding(0, dp(8), 0, dp(8)) })
+                    details.addView(label(listOf(selected.format(DateTimeFormatter.ofPattern("dd/MM")), task.category).filter { it.isNotBlank() }.joinToString(" · "), 12f, muted).apply { setPadding(0, dp(8), 0, dp(8)) })
                     val (badgeColor, badgeText) = when (task.priority) {
                         3 -> Color.rgb(252, 233, 236) to Color.rgb(190, 66, 82)
                         1 -> Color.rgb(231, 244, 237) to Color.rgb(57, 133, 99)
@@ -684,13 +709,14 @@ open class HomeActivity : WorkspaceActivity() {
         selectedNavigation = 2
         calendarRefresh = null
         repository.categories { result ->
-            if (isFinishing || isDestroyed) return@categories
+            if (isFinishing || isDestroyed || selectedNavigation != 2 || categoryFormOpen) return@categories
             result.onSuccess { showCategoryScreen(it) }
                 .onFailure { toast("Không thể tải danh mục.") }
         }
     }
 
     private fun showCategoryScreen(names: List<WorkspaceCategory>) {
+        updateCategoryOptions(names)
         val bg = Color.rgb(246, 247, 251); val white = Color.WHITE
         val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setBackgroundColor(bg) }
         val scroll = ScrollView(this)
@@ -712,13 +738,15 @@ open class HomeActivity : WorkspaceActivity() {
             val card = LinearLayout(this).apply {
                 orientation = LinearLayout.VERTICAL; background = rounded(white, 18, Color.rgb(218, 222, 234))
                 setPadding(dp(16), dp(16), dp(12), dp(16)); isClickable = true; isFocusable = true
-                setOnClickListener { category = item.ref; categoryLabel = item.label; categoryWritable = item.role != "VIEWER" && !item.transferring; selectedDate = null; selectedNavigation = 0; setContentView(binding.root); render() }
+                setOnClickListener { showHomeScreen(item) }
                 setOnLongClickListener { showCategoryActions(item); true }
             }
             val iconRow = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL }
-            val icon = TextView(this).apply {
-                text = listOf("⌂", "▣", "♙", "▱", "＋")[index % 5]; textSize = 22f; gravity = Gravity.CENTER
-                setTextColor(brand); background = rounded(Color.rgb(235, 239, 255), 13)
+            val icon = ImageView(this).apply {
+                scaleType = ImageView.ScaleType.CENTER_INSIDE
+                setPadding(0, dp(9), 0, dp(9))
+                importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+                renderCategoryIcon(CategoryIcon.fromKey(item.icon), item.color, 13)
             }
             iconRow.addView(icon, LinearLayout.LayoutParams(dp(42), dp(42), 1f))
             iconRow.addView(TextView(this).apply {
@@ -734,8 +762,6 @@ open class HomeActivity : WorkspaceActivity() {
                 setPadding(0, dp(16), 0, dp(5))
             })
             val source = when {
-                item.transferring -> "Đang chuyển qua tài khoản"
-                item.ref.workspace.uid == null -> "Local"
                 else -> item.role
             }
             card.addView(label("${tasks.count { it.categoryRef() == item.ref }} công việc · $source", 12f, muted))
@@ -751,7 +777,7 @@ open class HomeActivity : WorkspaceActivity() {
         listOf("☼" to "Hôm nay", "▦" to "7 ngày tới", "◷" to "Quá hạn", "✓" to "Đã hoàn thành").forEachIndexed { i, (symbol, title) ->
             val f = TaskFilter.entries[i]
             val count = tasks.count { f.includes(it.done, it.dueAt, LocalDate.now(zone), zone) }
-            val row = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL; setPadding(0, dp(11), 0, dp(11)); isClickable = true; setOnClickListener { filter = f; category = null; selectedDate = null; showHomeScreen() } }
+            val row = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL; setPadding(0, dp(11), 0, dp(11)); isClickable = true; setOnClickListener { filter = f; showHomeScreen() } }
             row.addView(label(symbol, 20f, if (i == 2) Color.rgb(205, 72, 85) else brand), LinearLayout.LayoutParams(dp(34), -2))
             row.addView(label(title, 14f, ink), LinearLayout.LayoutParams(0, -2, 1f))
             row.addView(label("$count   ›", 14f, muted, true))
@@ -767,62 +793,18 @@ open class HomeActivity : WorkspaceActivity() {
 
     private fun HomeTask.reminderKey(): String {
         val ref = TaskRef(WorkspaceRef(workspaceUid), id)
-        return ref.workspace.uid?.let { "$it/" + ref.id } ?: ref.id
+        return "${ref.workspace.uid}/${ref.id}"
     }
 
     private fun showCategoryActions(item: WorkspaceCategory) {
-        if (item.transferring) {
-            workspaceDialogs.show("Đồng bộ qua tài khoản",
-                "Danh mục đang được chuyển. Xem Vấn đề đồng bộ nếu quá trình chuyển gặp lỗi.")
-            return
+        fun refreshCategories() {
+            refreshTasks()
+            if (selectedNavigation == 2 && !categoryFormOpen) selectCategory()
         }
-        val actions = linkedMapOf<String, () -> Unit>()
-        if (item.role == "OWNER") {
-            actions["Đổi tên"] = { renameCategoryDialog(item) }
-            actions["Xóa danh mục"] = { confirmDeleteCategory(item) }
+        categorySettings.show(item, ::refreshCategories) {
+            if (category == item.ref) selectHomeCategory(null)
+            refreshCategories()
         }
-        if (item.ref.workspace.uid == null) {
-            actions["Đồng bộ qua tài khoản"] = {
-                if (auth.user == null) requireSharingAccount() else sharing.transfer(item) {
-                    refreshTasks()
-                    if (selectedNavigation == 2 && !categoryFormOpen) selectCategory()
-                }
-            }
-        } else {
-            actions[if (item.role == "OWNER") "Chia sẻ & thành viên" else "Thành viên"] = { sharing.members(item, ::refreshTasks) }
-        }
-        workspaceDialogs.choices(item.label, actions.toList())
-    }
-
-    private fun renameCategoryDialog(item: WorkspaceCategory) {
-        workspaceDialogs.form("Đổi tên danh mục", "Tên danh mục", "Lưu", value = item.name, maxLength = 100) { name, finish ->
-            repository.renameCategory(item, name) { result ->
-                if (isFinishing || isDestroyed) return@renameCategory
-                result.fold({
-                    finish(null)
-                    repository.categories { categories -> categories.onSuccess { showCategoryScreen(it) } }
-                    refreshTasks()
-                }, { error ->
-                    finish(error.message ?: "Không thể đổi tên danh mục.")
-                })
-            }
-        }
-    }
-
-    private fun confirmDeleteCategory(item: WorkspaceCategory) {
-        workspaceDialogs.confirm(
-            "Xóa danh mục này?",
-            item.name + " và các công việc bên trong sẽ được chuyển vào thùng rác.",
-            Action("Xóa", Tone.DESTRUCTIVE) {
-                repository.deleteCategory(item) { result ->
-                    if (isFinishing || isDestroyed) return@deleteCategory
-                    result.fold({
-                        if (category == item.ref) category = null
-                        refreshTasks()
-                        repository.categories { categories -> categories.onSuccess { showCategoryScreen(it) } }
-                    }, { error -> workspaceDialogs.notice(error.message ?: "Không thể xóa danh mục.", error = true) })
-                }
-            })
     }
 
     private fun showAddCategoryScreen() {
@@ -832,38 +814,56 @@ open class HomeActivity : WorkspaceActivity() {
         header.addView(TextView(this).apply { text = "×"; textSize = 30f; setTextColor(ink); isClickable = true; setOnClickListener { categoryFormOpen = false; selectCategory() } }, LinearLayout.LayoutParams(dp(48), dp(48)))
         header.addView(label("Thêm danh mục", 22f, ink, true))
         root.addView(header)
-        val icon = TextView(this).apply { text = "＋"; textSize = 30f; gravity = Gravity.CENTER; setTextColor(brand); background = rounded(Color.rgb(235, 239, 255), 16) }
-        root.addView(icon, LinearLayout.LayoutParams(dp(80), dp(80)).apply { topMargin = dp(54) })
+        var appearance = CategoryAppearance()
+        val icon = ImageView(this).apply {
+            scaleType = ImageView.ScaleType.FIT_CENTER
+            setPadding(dp(24), dp(24), dp(24), dp(24))
+            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+        }
+        val appearanceRow = LinearLayout(this).apply {
+            gravity = Gravity.CENTER_VERTICAL
+            isFocusable = true
+            addView(icon, LinearLayout.LayoutParams(dp(80), dp(80)))
+            addView(label(getString(R.string.category_appearance_choose), 14f, brand, true),
+                LinearLayout.LayoutParams(-2, -2).apply { marginStart = dp(14) })
+        }
+        fun renderAppearance() {
+            icon.renderCategoryIcon(appearance.icon, appearance.color.hex, 16)
+            appearanceRow.contentDescription = getString(R.string.category_appearance_selection,
+                getString(appearance.icon.label), getString(appearance.color.label))
+        }
+        appearanceRow.setOnClickListener {
+            showCategoryAppearancePicker(this, workspaceDialogs, appearance) { selected ->
+                appearance = selected
+                renderAppearance()
+            }
+        }
+        renderAppearance()
+        root.addView(appearanceRow, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(54) })
         root.addView(label("Nhóm các công việc liên quan để dễ theo dõi và sắp xếp.", 16f, muted).apply { setPadding(0, dp(24), 0, dp(34)) })
         root.addView(label("Tên danh mục", 14f, ink, true))
         val input = EditText(this).apply { setSingleLine(true); hint = "Ví dụ: Sức khỏe"; textSize = 16f; setPadding(dp(14), dp(12), dp(14), dp(12)); background = rounded(Color.WHITE, 14, Color.rgb(214, 219, 231)); filters = arrayOf(InputFilter.LengthFilter(100)) }
         root.addView(input, LinearLayout.LayoutParams(-1, dp(56)).apply { topMargin = dp(8) })
         root.addView(label("Ví dụ: Sức khỏe, Du lịch, Dự án cá nhân", 12f, muted).apply { setPadding(0, dp(8), 0, dp(30)) })
-        val source = android.widget.Switch(this).apply {
-            text = "Lưu vào tài khoản"
-            isChecked = repository.currentUid != null
-            visibility = if (repository.currentUid == null) View.GONE else View.VISIBLE
-        }
-        val accountUid = repository.currentUid
-        root.addView(source)
         val save = Button(this)
         save.apply { text = "Lưu danh mục"; isAllCaps = false; setTextColor(Color.WHITE); background = rounded(brand, 14); setOnClickListener {
             val name = input.text.toString().trim()
             if (name.isEmpty()) { input.error = "Nhập tên danh mục"; return@setOnClickListener }
             isEnabled = false
-            val target = WorkspaceRef(accountUid.takeIf { source.isChecked })
-            repository.createCategory(name, target) { result ->
+            val target = WorkspaceRef(repository.currentUid ?: return@setOnClickListener)
+            val iconKey = appearance.icon.takeUnless { it == CategoryIcon.PLUS }?.key
+            repository.createCategory(name, target, appearance.color.hex, iconKey) { result ->
                 if (isFinishing || isDestroyed) return@createCategory
                 result.onSuccess {
                     categoryFormOpen = false
-                    category = null
+                    selectHomeCategory(null)
                     selectedNavigation = 2
                     refreshTasks()
-                    repository.categories { cats -> cats.onSuccess { showCategoryScreen(it) } }
+                    selectCategory()
                 }.onFailure { error ->
                     save.isEnabled = true
                     val message = error.message ?: "Không thể lưu danh mục."
-                    if (target.uid != null) workspaceDialogs.notice(message, error = true) else toast(message)
+                    workspaceDialogs.notice(message, error = true)
                 }
             }
         } }
@@ -882,51 +882,23 @@ open class HomeActivity : WorkspaceActivity() {
         root.addView(bar)
     }
 
-    private fun accountMenu() {
-        val signedIn = auth.user != null
-        val dialog = AlertDialog.Builder(this).setTitle(if (signedIn) auth.user?.email else "Bạn đang dùng chế độ khách")
-            .setMessage("Công việc trong không gian offline được lưu trên thiết bị. Đăng nhập không tự tải dữ liệu này lên mạng.")
-            .setPositiveButton(if (signedIn) "Đăng xuất" else "Đăng nhập") { _, _ ->
-                if (signedIn) { signOutWorkspace() }
-                else startActivity(Intent(this, LoginActivity::class.java))
-            }.setNeutralButton("Chia sẻ danh sách") { _, _ -> requireSharingAccount() }
-            .setNegativeButton("Đóng", null)
-        if (signedIn && auth.user?.emailVerified == false) {
-            dialog.setView(Button(this).apply {
-                setText(R.string.verify_email_title)
-                isAllCaps = false
-                setOnClickListener {
-                    startActivity(Intent(this@HomeActivity, RegisterActivity::class.java)
-                        .putExtra(RegisterActivity.EXTRA_VERIFY_ONLY, true))
-                }
-            })
-        }
-        dialog.show()
-    }
-
     private fun requireSharingAccount() {
         if (!WorkspaceSync.configured) return sharing.showBackendUnavailable()
-        if (auth.user == null) {
-            workspaceDialogs.confirm(
-                "Đăng nhập để chia sẻ",
-                "Bạn cần tài khoản để chia sẻ danh sách. Các chức năng offline vẫn dùng được mà không cần đăng nhập.",
-                Action("Đăng nhập") { startActivity(Intent(this, LoginActivity::class.java)) },
-                cancel = "Tiếp tục offline"
-            )
-        } else {
-            workspaceDialogs.choices("Chia sẻ danh mục", listOf(
-                "Danh mục" to { selectCategory() },
-                "Lời mời danh mục" to { sharing.invitations() },
-                "Vấn đề đồng bộ" to { sharing.conflicts(::refreshTasks) }
-            ))
-        }
+        workspaceDialogs.choices("Chia sẻ danh mục", listOf(
+            "Danh mục" to { selectCategory() },
+            "Lời mời danh mục" to { sharing.invitations() },
+            "Vấn đề đồng bộ" to { sharing.conflicts(::refreshTasks) }
+        ))
     }
 
     private fun signOutWorkspace() {
         auth.signOut()
-        tasks = tasks.filter { it.workspaceUid == null }
-        showHomeScreen()
-        reload()
+        openEntrance()
+    }
+
+    private fun openEntrance() {
+        startActivity(Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK))
+        finish()
     }
 
     private fun showTaskDetail(task: HomeTask) {
@@ -941,7 +913,6 @@ open class HomeActivity : WorkspaceActivity() {
             val target = category
             if (target != null && !categoryWritable) return
             startActivity(Intent(this, AddTaskActivity::class.java).apply {
-                target?.let { putExtra("categoryId", it.id); putExtra("categoryUid", it.workspace.uid) }
             })
             return
         }
@@ -959,9 +930,14 @@ open class HomeActivity : WorkspaceActivity() {
     }
 
     private fun refreshTasks() {
-        repository.load { result ->
-            if (isFinishing || isDestroyed) return@load
-            result.fold({ tasks = it; render(); calendarRefresh?.invoke(); searchRefresh?.invoke() }, { failed = true; toast("Không thể tải lại công việc.") })
+        repository.loadHome { result ->
+            if (isFinishing || isDestroyed) return@loadHome
+            result.fold({
+                applyHomeContent(it)
+                render()
+                calendarRefresh?.invoke()
+                searchRefresh?.invoke()
+            }, { failed = true; toast("Không thể tải lại công việc.") })
         }
     }
 
@@ -1422,7 +1398,7 @@ open class HomeActivity : WorkspaceActivity() {
         root.addView(header)
 
         val user = auth.user
-        val currentName = user?.displayName?.takeIf { it.isNotBlank() } ?: GuestProfilePreferences.name(this) ?: "Khách"
+        val currentName = user?.displayName?.takeIf { it.isNotBlank() } ?: "bạn"
         val body = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(dp(26), dp(38), dp(26), dp(20)) }
         val avatarFrame = FrameLayout(this)
         val avatarInitials = label(
@@ -1434,8 +1410,8 @@ open class HomeActivity : WorkspaceActivity() {
             scaleType = ImageView.ScaleType.CENTER_CROP
             background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(Color.TRANSPARENT) }
             clipToOutline = true
-            GuestProfilePreferences.avatar(this@HomeActivity)?.let { saved ->
-                runCatching { setImageURI(android.net.Uri.parse(saved)) }
+            avatar()?.let { saved ->
+                runCatching { setImageURI(android.net.Uri.fromFile(saved)) }
             }
         }
         profileAvatarImage = avatarImage
@@ -1483,25 +1459,17 @@ open class HomeActivity : WorkspaceActivity() {
                 val name = nameInput.text.toString().trim()
                 if (name.isEmpty()) { nameInput.error = "Nhập họ và tên"; return@setOnClickListener }
                 isEnabled = false
-                if (user == null) {
-                    GuestProfilePreferences.saveName(this@HomeActivity, name)
-                    profileEditorOpen = false
-                    render()
-                    showPersonalScreen()
-                    toast("Đã lưu hồ sơ trên thiết bị.")
-                } else {
-                    auth.updateDisplayName(name) { result ->
-                        if (isFinishing || isDestroyed) return@updateDisplayName
-                        result.fold({
-                            profileEditorOpen = false
-                            render()
-                            showPersonalScreen()
-                            toast("Đã cập nhật hồ sơ.")
-                        }, { error ->
-                            isEnabled = true
-                            Toast.makeText(this@HomeActivity, error.message ?: "Không thể cập nhật hồ sơ.", Toast.LENGTH_LONG).show()
-                        })
-                    }
+                auth.updateDisplayName(name) { result ->
+                    if (isFinishing || isDestroyed) return@updateDisplayName
+                    result.fold({
+                        profileEditorOpen = false
+                        render()
+                        showPersonalScreen()
+                        toast("Đã cập nhật hồ sơ.")
+                    }, { error ->
+                        isEnabled = true
+                        Toast.makeText(this@HomeActivity, error.message ?: "Không thể cập nhật hồ sơ.", Toast.LENGTH_LONG).show()
+                    })
                 }
             }
         }
@@ -1563,7 +1531,7 @@ open class HomeActivity : WorkspaceActivity() {
                             card.addView(TextView(this).apply {
                                 val deletedDate = java.time.Instant.ofEpochMilli(item.deletedAt).atZone(zone)
                                     .format(DateTimeFormatter.ofPattern("dd/MM/yyyy HH:mm"))
-                                text = "${item.category} · Đã xóa $deletedDate"; textSize = 12f; setTextColor(muted)
+                                text = listOf(item.category, "Đã xóa $deletedDate").filter { it.isNotBlank() }.joinToString(" · "); textSize = 12f; setTextColor(muted)
                                 setPadding(0, dp(5), 0, dp(11))
                             })
                             val actions = LinearLayout(this).apply { gravity = Gravity.END or Gravity.CENTER_VERTICAL }
@@ -1577,11 +1545,6 @@ open class HomeActivity : WorkspaceActivity() {
                                             restored.onSuccess {
                                                 finish?.invoke(null)
                                                 trashPageOpen = false
-                                                selectedNavigation = 0
-                                                selectedDate = null
-                                                category = CategoryRef(WorkspaceRef(item.workspaceUid), item.categoryId)
-                                                categoryLabel = item.category
-                                                categoryWritable = true
                                                 showHomeScreen()
                                                 reload()
                                                 workspaceDialogs.notice("Đã khôi phục " +
@@ -1610,8 +1573,7 @@ open class HomeActivity : WorkspaceActivity() {
                                             repository.trashAction(item, true, null) { removed ->
                                                 removed.onSuccess {
                                                     refresh()
-                                                    workspaceDialogs.notice(if (item.workspaceUid == null) "Đã xóa vĩnh viễn."
-                                                        else "Đã lưu yêu cầu xóa vĩnh viễn để đồng bộ.")
+                                                    workspaceDialogs.notice("Đã lưu yêu cầu xóa vĩnh viễn để đồng bộ.")
                                                 }.onFailure {
                                                     workspaceDialogs.notice(it.message ?: "Không thể xóa mục này.", error = true)
                                                 }
@@ -1636,7 +1598,7 @@ open class HomeActivity : WorkspaceActivity() {
         clear.setOnClickListener {
             workspaceDialogs.confirm(
                 "Dọn sạch thùng rác?",
-                "Các mục Local và các mục bạn sở hữu sẽ bị xóa vĩnh viễn. Không thể hoàn tác.",
+                "Các mục bạn sở hữu sẽ bị xóa vĩnh viễn. Không thể hoàn tác.",
                 Action("Dọn sạch", Tone.DESTRUCTIVE) {
                     repository.permanentlyDeleteAll { result ->
                         result.onSuccess { refresh() }
@@ -1688,7 +1650,6 @@ open class HomeActivity : WorkspaceActivity() {
         fun settingRow(
             icon: String,
             title: String,
-            subtitle: String? = null,
             isSwitch: Boolean = false,
             checked: Boolean = true,
             danger: Boolean = false,
@@ -1727,14 +1688,6 @@ open class HomeActivity : WorkspaceActivity() {
                 text(title, 14f, if (danger) red else ink)
             )
 
-            if (subtitle != null) {
-                content.addView(
-                    text(subtitle, 11f, muted).apply {
-                        setPadding(0, dp(3), 0, 0)
-                    }
-                )
-            }
-
             row.addView(
                 content,
                 LinearLayout.LayoutParams(0, -2, 1f)
@@ -1769,7 +1722,7 @@ open class HomeActivity : WorkspaceActivity() {
         }
 
         val user = auth.user
-        val profileName = user?.displayName?.takeIf { it.isNotBlank() } ?: GuestProfilePreferences.name(this) ?: "Khách"
+        val profileName = user?.displayName?.takeIf { it.isNotBlank() } ?: "bạn"
         val completed = tasks.count { it.done }
         val doing = tasks.count { !it.done && it.dueAt?.let {
             Instant.ofEpochMilli(it).atZone(zone).toLocalDate() < LocalDate.now(zone)
@@ -1827,9 +1780,9 @@ open class HomeActivity : WorkspaceActivity() {
             clipToOutline = true
             visibility = View.GONE
         }
-        GuestProfilePreferences.avatar(this)?.let { savedAvatar ->
+        avatar()?.let { savedAvatar ->
             runCatching {
-                avatarImage.setImageURI(android.net.Uri.parse(savedAvatar))
+                avatarImage.setImageURI(android.net.Uri.fromFile(savedAvatar))
                 avatarImage.visibility = View.VISIBLE
             }
         }
@@ -1946,7 +1899,7 @@ open class HomeActivity : WorkspaceActivity() {
 
                     NotificationPreferences.setEnabled(this, enabled)
 
-                    UnifiedTaskRepository.get(this).setNotificationsEnabled(enabled) { result ->
+                    UnifiedTaskRepository.get(this).refreshNotifications { result ->
 
                         result.onFailure { error ->
                             Toast.makeText(
@@ -1958,19 +1911,6 @@ open class HomeActivity : WorkspaceActivity() {
 
                     }
                 }
-            )
-        )
-
-        settingsCard.addView(
-            divider(),
-            LinearLayout.LayoutParams(-1, dp(1))
-        )
-
-        settingsCard.addView(
-            settingRow(
-                "♡",
-                "Đồng bộ đa thiết bị",
-                subtitle = "Chưa triển khai. Dấu xóa được giữ trong hàng đợi trên thiết bị."
             )
         )
 
@@ -1993,31 +1933,12 @@ open class HomeActivity : WorkspaceActivity() {
         logoutCard.addView(
             settingRow(
                 "⇥",
-                if (user != null) "Đăng xuất" else "Đăng nhập",
+                "Đăng xuất",
                 danger = true
             ).apply {
                 setOnClickListener {
-                    if (user != null) {
-                        // Hiện hộp thoại xác nhận
-                        AlertDialog.Builder(this@HomeActivity)
-                            .setTitle("Đăng xuất")
-                            .setMessage("Bạn có chắc chắn muốn đăng xuất khỏi tài khoản không?")
-                            .setNegativeButton("Hủy", null)
-                            .setPositiveButton("Đăng xuất") { _, _ ->
-
-                                signOutWorkspace()
-                            }
-                            .show()
-
-                    } else {
-                        // Nếu chưa đăng nhập thì chuyển đến màn hình đăng nhập
-                        startActivity(
-                            Intent(
-                                this@HomeActivity,
-                                LoginActivity::class.java
-                            )
-                        )
-                    }
+                    workspaceDialogs.confirm("Đăng xuất?", "Bạn có chắc chắn muốn đăng xuất khỏi tài khoản không?",
+                        Action("Đăng xuất", Tone.DESTRUCTIVE, ::signOutWorkspace))
                 }
             }
         )

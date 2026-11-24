@@ -37,6 +37,7 @@ class AddTaskActivity : WorkspaceActivity() {
     private var priority = 2
     private var repeatType = "NONE"
     private lateinit var repository: UnifiedTaskRepository
+    private var session: AccountSession? = null
     private var categoryNames = emptyList<WorkspaceCategory>()
     private lateinit var category: WorkspaceCategory
     private val reminderValues = listOf(null, 0L, 5L, 15L, 30L, 60L, 1440L)
@@ -49,11 +50,11 @@ class AddTaskActivity : WorkspaceActivity() {
         applyInsets(binding.root)
         model = ViewModelProvider(this)[AddTaskViewModel::class.java]
         repository = UnifiedTaskRepository.get(this)
-        val selectedUid = if (savedInstanceState?.containsKey("category") == true) savedInstanceState.getString("categoryUid")
-            else if (intent.hasExtra("categoryId")) intent.getStringExtra("categoryUid") else repository.currentUid
-        val account = selectedUid?.takeIf { it == repository.currentUid }
-        val selectedId = savedInstanceState?.getString("category") ?: intent.getStringExtra("categoryId")
-        category = WorkspaceCategory(CategoryRef(WorkspaceRef(account), ""), TaskDefaults.UNCATEGORIZED, "OWNER")
+        val current = AccountSession.current(this) ?: run { openEntrance(); return }
+        session = current
+        val selectedId = savedInstanceState?.takeIf { it.getString("categoryUid") == current.uid }?.getString("category")
+        val blank = WorkspaceCategory(CategoryRef(WorkspaceRef(current.uid), ""), "", "OWNER")
+        category = blank
         categoryNames = listOf(category)
         var optionsLoaded = false
         priority = savedInstanceState?.getInt("priority", 2) ?: 2
@@ -65,21 +66,14 @@ class AddTaskActivity : WorkspaceActivity() {
         setupDropdowns()
         repository.categories { result ->
             if (isFinishing || isDestroyed) return@categories
-            val actual = result.getOrDefault(emptyList()).filter { it.role != "VIEWER" }
-            val workspaces = listOfNotNull(repository.currentUid?.let(::WorkspaceRef)) + WorkspaceRef()
-            val fallback = workspaces.filter { workspace ->
-                actual.none { it.ref.workspace == workspace && it.role == "OWNER" && it.name == TaskDefaults.UNCATEGORIZED }
-            }.map { WorkspaceCategory(CategoryRef(it, ""), TaskDefaults.UNCATEGORIZED, "OWNER") }
-            categoryNames = (fallback + actual).sortedBy { if (it.name == TaskDefaults.UNCATEGORIZED) 0 else 1 }
-            val preferred = categoryNames.firstOrNull { it.ref.workspace.uid == account && it.ref.id == selectedId }
-                ?: categoryNames.firstOrNull { it.ref.workspace.uid == account && it.role == "OWNER" && it.name == TaskDefaults.UNCATEGORIZED }
-            // A category that lost write access cannot silently redirect a save.
-            if (!selectedId.isNullOrEmpty() && categoryNames.none { it.ref.workspace.uid == account && it.ref.id == selectedId }) {
-                android.widget.Toast.makeText(this, "Danh mục không còn quyền chỉnh sửa.", android.widget.Toast.LENGTH_SHORT).show()
-                finish()
+            if (AccountSession.current(this) !== current) { openEntrance(); return@categories }
+            val categories = result.getOrElse {
+                binding.error.setText(R.string.task_editor_save_error)
+                binding.error.visibility = View.VISIBLE
                 return@categories
             }
-            category = preferred ?: categoryNames.first()
+            categoryNames = listOf(blank) + categories.filter { it.role != "VIEWER" }
+            category = categoryNames.firstOrNull { it.ref.id == selectedId } ?: blank
             binding.categories.adapter = adapter(categoryNames.map { it.label })
             binding.categories.setSelection(categoryNames.indexOf(category))
             optionsLoaded = true
@@ -134,7 +128,20 @@ class AddTaskActivity : WorkspaceActivity() {
         }
     }
 
+    override fun onResume() {
+        super.onResume()
+        if (!isFinishing && (session == null || AccountSession.current(this) !== session)) openEntrance()
+    }
+
+    private fun openEntrance() {
+        startActivity(android.content.Intent(this, com.finalexam.to_do_list.MainActivity::class.java)
+            .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK or android.content.Intent.FLAG_ACTIVITY_CLEAR_TASK))
+        finish()
+    }
+
     override fun onSaveInstanceState(outState: Bundle) {
+        super.onSaveInstanceState(outState)
+        if (!::category.isInitialized) return
         outState.putString("category", category.ref.id)
         outState.putString("categoryUid", category.ref.workspace.uid)
         outState.putInt("priority", priority)
@@ -142,7 +149,6 @@ class AddTaskActivity : WorkspaceActivity() {
         outState.putLong("dueAt", dueAt)
         outState.putBoolean("noReminder", reminderMinutes == null)
         reminderMinutes?.let { outState.putLong("reminderMinutes", it) }
-        super.onSaveInstanceState(outState)
     }
 
     private fun saving() = model.state.value == AddTaskViewModel.SaveState.SAVING

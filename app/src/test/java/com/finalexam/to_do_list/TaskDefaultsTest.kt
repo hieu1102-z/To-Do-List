@@ -21,8 +21,4 @@ class TaskDefaultsTest {
         val clock = Clock.fixed(Instant.parse("2026-03-08T05:00:00Z"), ZoneId.of("America/New_York"))
         assertEquals(Instant.parse("2026-03-09T04:00:00Z").toEpochMilli(), TaskDefaults.nextMidnight(clock))
     }
-    @Test fun unclassifiedIsFirstChoice() {
-        assertEquals("to do", TaskDefaults.categories.first())
-        assertEquals(1, TaskDefaults.categories.count { it == "to do" })
-    }
 }

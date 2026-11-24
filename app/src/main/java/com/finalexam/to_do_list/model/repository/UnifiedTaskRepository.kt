@@ -3,80 +3,53 @@ package com.finalexam.to_do_list.model.repository
 import android.content.Context
 import android.os.Handler
 import android.os.Looper
-import com.finalexam.to_do_list.model.local.AppDatabase
 import com.finalexam.to_do_list.model.local.entity.SubtaskEntity
-import com.finalexam.to_do_list.model.local.entity.UserEntity
 import com.finalexam.to_do_list.model.local.relation.HomeTask
 import com.finalexam.to_do_list.model.local.relation.TrashTask
-import com.finalexam.to_do_list.model.remote.AuthUser
 import com.finalexam.to_do_list.notification.AccountReminders
 import java.time.Instant
 import java.time.ZoneId
 import java.util.concurrent.Executors
 
-internal fun AuthUser.toWorkspaceProfile() =
-    UserEntity(uid, email, nameKey(email), displayName.orEmpty(), emailVerified, avatarUrl)
+internal data class HomeContent(val tasks: List<HomeTask>, val categories: List<WorkspaceCategory>)
 
 class UnifiedTaskRepository private constructor(private val context: Context) {
-    private val local = GuestTaskRepository.get(context)
     private val executor = Executors.newSingleThreadExecutor()
     private val remoteExecutor = Executors.newSingleThreadExecutor()
     private val main = Handler(Looper.getMainLooper())
-    private val auth get() = AuthRepository.get(context)
-    val currentUid get() = auth.user?.uid
+    val currentUid get() = AccountSession.current(context)?.uid
     private val now get() = System.currentTimeMillis()
 
-    private fun <T> open(uid: String, work: AccountWorkspace.() -> T): T {
-        val user = auth.user?.takeIf { it.uid == uid } ?: error("Phiên đăng nhập đã thay đổi.")
-        return AccountWorkspace(uid, AppDatabase.accountBuilder(context, uid).build()).use { store ->
-            store.database.users().upsert(user.toWorkspaceProfile())
-            store.work()
-        }
-    }
-
-    private fun <T> account(uid: String, mutate: Boolean = false, callback: (Result<T>) -> Unit,
+    private fun <T> account(uid: String?, mutate: Boolean = false, callback: (Result<T>) -> Unit,
                             work: AccountWorkspace.() -> T) {
+        val session = AccountSession.current(context)?.takeIf { it.uid == uid }
+            ?: return callback(Result.failure(AuthFailure.SESSION_REQUIRED))
         executor.execute {
             val result = runCatching {
-                open(uid) {
+                AccountSession.access(context, session) {
                     if (!mutate) work() else {
                         val value = transaction { work() }
-                        if (currentUid == uid) AccountReminders.reconcile(context, this)
-                        WorkspaceSync.request(context, uid)
-                        WorkspaceSync.changed()
+                        if (AccountSession.current(context) === session) {
+                            AccountReminders.reconcile(context, this)
+                            WorkspaceSync.request(context, session.uid)
+                            WorkspaceSync.changed()
+                        }
                         value
                     }
                 }
             }
-            main.post { callback(if (currentUid == uid) result else Result.failure(IllegalStateException("Phiên đăng nhập đã thay đổi."))) }
+            main.post {
+                callback(if (AccountSession.current(context) === session) result else Result.failure(AuthFailure.CANCELLED))
+            }
         }
     }
 
-    fun load(callback: (Result<List<HomeTask>>) -> Unit) {
-        local.load { guest ->
-            val uid = currentUid
-            if (uid == null || guest.isFailure) callback(guest)
-            else account(uid, callback = { cloud ->
-                val accountTasks = cloud.getOrDefault(emptyList())
-                val accountCategories = accountTasks.map { it.categoryId }.toSet()
-                val rows = guest.getOrThrow().filterNot { it.categoryId in accountCategories }
-                callback(Result.success((rows + accountTasks)
-                    .sortedWith(compareBy<HomeTask> { it.done }.thenBy { it.dueAt ?: Long.MAX_VALUE }.thenByDescending { it.createdAt })))
-            }) { home() }
-        }
-    }
+    fun load(callback: (Result<List<HomeTask>>) -> Unit) = account(currentUid, callback = callback) { home() }
 
-    fun categories(callback: (Result<List<WorkspaceCategory>>) -> Unit) {
-        local.workspaceCategories { guest ->
-            val uid = currentUid
-            if (uid == null || guest.isFailure) callback(guest)
-            else account(uid, callback = { cloud ->
-                val accountCategories = cloud.getOrDefault(emptyList())
-                val accountIds = accountCategories.map { it.ref.id }.toSet()
-                callback(Result.success(guest.getOrThrow().filterNot { it.ref.id in accountIds } + accountCategories))
-            }) { categories() }
-        }
-    }
+    internal fun loadHome(callback: (Result<HomeContent>) -> Unit) =
+        account(currentUid, callback = callback) { HomeContent(home(), categories()) }
+
+    fun categories(callback: (Result<List<WorkspaceCategory>>) -> Unit) = account(currentUid, callback = callback) { categories() }
 
     fun watch() {
         val uid = currentUid ?: return WorkspaceSync.unwatch()
@@ -93,31 +66,17 @@ class UnifiedTaskRepository private constructor(private val context: Context) {
         }
     }
 
-    fun createCategory(name: String, workspace: WorkspaceRef, callback: (Result<String>) -> Unit) {
+    fun createCategory(name: String, workspace: WorkspaceRef, color: String, icon: String?, callback: (Result<String>) -> Unit) {
         val uid = workspace.uid
-        if (uid == null) local.createCategory(name, callback)
-        else account(uid, true, callback) { createCategory(name) }
+        account(uid, true, callback) { createCategory(name, color = color, icon = icon) }
     }
 
-    fun renameCategory(category: WorkspaceCategory, title: String, callback: (Result<Unit>) -> Unit) {
-        val uid = category.ref.workspace.uid
-        if (uid == null) return local.renameCategory(category.name, title, category.ref.id, callback)
-        account(uid, true, callback) {
-            val cid = category.ref.id
-            requireRole(cid, "OWNER")
-            val old = checkNotNull(category(cid))
-            check(old["deleted_at"] == null)
-            check(old.long("revision") == category.revision) { "Danh mục vừa thay đổi. Hãy mở lại." }
-            val name = normalizedName(title)
-            require(name.length in 1..100)
-            upsert("categories", old + mapOf("name" to name, "name_key" to nameKey(name), "client_updated_at" to now))
-            enqueue(cid, "CATEGORY", cid, "UPDATE", old.long("revision"), mapOf("name" to name))
-        }
-    }
+    fun updateCategory(category: WorkspaceCategory, title: String, color: String?, icon: String?,
+                       callback: (Result<WorkspaceCategory>) -> Unit) =
+        account(category.ref.workspace.uid, true, callback) { updateCategory(category, title, color, icon) }
 
     fun deleteCategory(category: WorkspaceCategory, callback: (Result<Unit>) -> Unit) {
         val uid = category.ref.workspace.uid
-        if (uid == null) return local.deleteCategory(category.name, category.ref.id, callback)
         account(uid, true, callback) {
             val cid = category.ref.id
             requireRole(cid, "OWNER")
@@ -131,9 +90,8 @@ class UnifiedTaskRepository private constructor(private val context: Context) {
     fun create(title: String, description: String, destination: WorkspaceCategory, priority: Int,
                dueAt: Long?, reminderMinutes: Long?, repeatType: String, callback: (Result<Unit>) -> Unit) {
         val uid = destination.ref.workspace.uid
-        if (uid == null) return local.create(title, description, destination.name, priority, dueAt, reminderMinutes, repeatType, callback)
         account(uid, true, callback) {
-            val cid = destination.ref.id.ifEmpty { todoCategory() }
+            val cid = destination.ref.id.ifEmpty { ensureDefaultCategory() }
             requireActive(cid)
             val task = taskFields(title, description, priority, dueAt, repeatType)
             val id = uuid()
@@ -144,12 +102,10 @@ class UnifiedTaskRepository private constructor(private val context: Context) {
         }
     }
 
-    fun updateTask(task: HomeTask, title: String, description: String, category: String, priority: Int,
+    fun updateTask(task: HomeTask, title: String, description: String, priority: Int,
                    dueAt: Long?, reminderMinutes: Long?, reminderChanged: Boolean, repeatType: String,
                    callback: (Result<Unit>) -> Unit) {
         val uid = task.workspaceUid
-        if (uid == null) return local.updateTask(task.id, title, description, category, priority, dueAt,
-            reminderMinutes, reminderChanged, repeatType, callback)
         account(uid, true, callback) {
             val old = editable(task, true)
             val fields = taskFields(title, description, priority, dueAt, repeatType)
@@ -190,7 +146,6 @@ class UnifiedTaskRepository private constructor(private val context: Context) {
 
     fun toggle(task: HomeTask, callback: (Result<Unit>) -> Unit) {
         val uid = task.workspaceUid
-        if (uid == null) return local.toggle(task.id, callback)
         account(uid, true, callback) {
             val row = editable(task, true)
             val done = row.long("is_done") == 0L
@@ -201,7 +156,6 @@ class UnifiedTaskRepository private constructor(private val context: Context) {
 
     fun delete(task: HomeTask, callback: (Result<Unit>) -> Unit) {
         val uid = task.workspaceUid
-        if (uid == null) return local.delete(task.id, callback)
         account(uid, true, callback) {
             val row = editable(task, true)
             upsert("tasks", row + mapOf("deleted_at" to now, "client_updated_at" to now))
@@ -225,29 +179,20 @@ class UnifiedTaskRepository private constructor(private val context: Context) {
     }
 
     fun removeReminders(tasks: List<HomeTask>, callback: (Result<Unit>) -> Unit) {
-        local.removeReminders(tasks.filter { it.workspaceUid == null }.map { it.id }.toSet()) { result ->
-            val uid = currentUid
-            if (uid == null || result.isFailure || tasks.none { it.workspaceUid == uid }) callback(result)
-            else account(uid, true, callback) {
-                tasks.filter { it.workspaceUid == uid }.forEach {
-                    check(role(it.categoryId) != null && it.categoryId !in transferIds())
-                    editReminder(it.categoryId, it.id, null)
-                }
+        val uid = currentUid
+        account(uid, true, callback) {
+            tasks.filter { it.workspaceUid == uid }.forEach {
+                check(role(it.categoryId) != null)
+                editReminder(it.categoryId, it.id, null)
             }
         }
     }
 
-    fun setNotificationsEnabled(enabled: Boolean, callback: (Result<Unit>) -> Unit) {
-        local.setNotificationsEnabled(enabled) { result ->
-            val uid = currentUid
-            if (uid == null || result.isFailure) callback(result)
-            else account(uid, callback = callback) { AccountReminders.reconcile(context, this) }
-        }
-    }
+    fun refreshNotifications(callback: (Result<Unit>) -> Unit) =
+        account(currentUid, callback = callback) { AccountReminders.reconcile(context, this) }
 
     fun subtasks(task: HomeTask, callback: (Result<List<SubtaskEntity>>) -> Unit) {
         val uid = task.workspaceUid
-        if (uid == null) return local.subtasks(task.id, callback)
         account(uid, callback = callback) {
             check(role(task.categoryId) != null && category(task.categoryId)?.get("deleted_at") == null)
             database.tasks().subtasks(task.id)
@@ -256,7 +201,6 @@ class UnifiedTaskRepository private constructor(private val context: Context) {
 
     fun addSubtask(task: HomeTask, title: String, callback: (Result<Unit>) -> Unit) {
         val uid = task.workspaceUid
-        if (uid == null) return local.addSubtask(task.id, title, callback)
         account(uid, true, callback) {
             editable(task, false)
             val id = uuid()
@@ -268,10 +212,6 @@ class UnifiedTaskRepository private constructor(private val context: Context) {
 
     fun changeSubtask(task: HomeTask, sub: SubtaskEntity, title: String?, done: Boolean, callback: (Result<Unit>) -> Unit) {
         val uid = task.workspaceUid
-        if (uid == null) {
-            if (title == null) local.deleteSubtask(sub.id, callback) else local.updateSubtask(sub.id, title, done, callback)
-            return
-        }
         account(uid, true, callback) {
             editable(task, false)
             val old = checkNotNull(database.tasks().findSubtask(sub.id))
@@ -298,29 +238,15 @@ class UnifiedTaskRepository private constructor(private val context: Context) {
         }
     }
 
-    fun trash(callback: (Result<List<TrashTask>>) -> Unit) {
-        local.trash { localResult ->
-            val uid = currentUid
-            if (uid == null || localResult.isFailure) callback(localResult)
-            else account(uid, callback = { cloud -> callback(Result.success(
-                (localResult.getOrThrow() + cloud.getOrDefault(emptyList())).sortedByDescending { it.deletedAt }
-            )) }) { trash() }
-        }
-    }
+    fun trash(callback: (Result<List<TrashTask>>) -> Unit) = account(currentUid, callback = callback) { trash() }
 
     fun trashAction(item: TrashTask, purge: Boolean, name: String? = null, callback: (Result<Unit>) -> Unit) {
-        val uid = item.workspaceUid
-        if (uid == null) {
-            when (item.entityType) {
-                "CATEGORY" -> local.changeCategoryTrash(item, purge, name, callback)
-                "SUBTASK" -> local.changeSubtaskTrash(item, purge, callback)
-                else -> if (purge) local.permanentlyDeleteTask(item.id, callback) else local.restoreTask(item.id, callback)
-            }
-        } else account(uid, true, callback) { changeTrash(item, purge, name) }
+        account(item.workspaceUid, true, callback) { changeTrash(item, purge, name) }
     }
 
     private fun AccountWorkspace.changeTrash(item: TrashTask, purge: Boolean, name: String?) {
         val cid = item.categoryId
+        check(item.entityType != "CATEGORY" || cid != defaultCategoryId(uid))
         if (purge || item.entityType == "CATEGORY") requireRole(cid, "OWNER") else requireActive(cid)
         val table = if (item.entityType == "CATEGORY") "categories" else snapshotGroups.getValue(item.entityType)
         val old = checkNotNull(sql.rows("SELECT * FROM $table WHERE id=?", item.id).firstOrNull())
@@ -335,64 +261,74 @@ class UnifiedTaskRepository private constructor(private val context: Context) {
             if (purge) "PURGE" else "RESTORE", item.revision, newName?.let { mapOf("name" to it) }.orEmpty())
     }
 
-    fun permanentlyDeleteAll(callback: (Result<Unit>) -> Unit) {
-        val uid = currentUid
-        local.permanentlyDeleteAll { result ->
-            if (uid == null || result.isFailure) callback(result)
-            else account(uid, true, callback) { trash().filter { it.role == "OWNER" }.forEach { changeTrash(it, true, null) } }
-        }
+    fun permanentlyDeleteAll(callback: (Result<Unit>) -> Unit) = account(currentUid, true, callback) {
+        trash().filter { it.role == "OWNER" }.forEach { changeTrash(it, true, null) }
     }
 
-    fun transferLocal(categoryId: String, owner: String, name: String, callback: (Result<Unit>) -> Unit) {
-        if (!WorkspaceSync.configured) return callback(Result.failure(WorkspaceRequestError("BACKEND_NOT_CONFIGURED")))
-        executor.execute {
-            val result = runCatching {
-                val title = normalizedName(name)
-                require(title.length in 1..100) { "Tên danh mục cần từ 1 đến 100 ký tự." }
-                synchronized(categoryTransferLock) {
-                    open(owner) {
-                        check(database.tasks().categoryId(owner, nameKey(title)) == null) {
-                            "Tài khoản đã có danh mục cùng tên. Hãy chọn tên khác."
-                        }
-                        GuestCategoryTransfers(context, AppDatabase.guestBuilder(context).build()).use { guest ->
-                            val source = guest.begin(categoryId, owner, title)
-                            try {
-                                transferIn(source)
-                            } catch (error: Exception) {
-                                guest.release(source.request)
-                                throw error
-                            }
-                        }
-                        AccountReminders.reconcile(context, this)
+    internal fun cachedMembers(category: WorkspaceCategory, callback: (Result<WorkspaceMembers>) -> Unit) =
+        account(category.ref.workspace.uid, callback = callback) { cachedMembers(category.ref.id) }
+
+    internal fun refreshMembers(category: WorkspaceCategory, callback: (Result<WorkspaceMembers>) -> Unit) {
+        if (currentUid != category.ref.workspace.uid) return callback(Result.failure(AuthFailure.CANCELLED))
+        online(callback, scheduleSync = false) { it.members(category.ref.id) }
+    }
+
+    internal fun cachedPendingInvitations(category: WorkspaceCategory, callback: (Result<List<WorkspacePendingInvitation>>) -> Unit) =
+        account(category.ref.workspace.uid, callback = callback) { cachedPendingInvitations(category.ref.id) }
+
+    internal fun refreshPendingInvitations(category: WorkspaceCategory, callback: (Result<List<WorkspacePendingInvitation>>) -> Unit) {
+        val uid = category.ref.workspace.uid
+        if (currentUid != uid) return callback(Result.failure(AuthFailure.CANCELLED))
+        val categoryId = category.ref.id
+        online({ result ->
+            result.fold({ rows ->
+                account(uid, callback = callback) { replacePendingInvitations(categoryId, rows) }
+            }, { error ->
+                if (error.businessCode() == "PERMISSION_DENIED") {
+                    account(uid, callback = { callback(Result.failure(it.exceptionOrNull() ?: error)) }) {
+                        clearPendingInvitations(categoryId)
                     }
-                }
-                WorkspaceSync.request(context, owner)
-                WorkspaceSync.changed()
-            }
-            main.post {
-                if (currentUid == owner) callback(result)
-                else callback(Result.failure(IllegalStateException("Phiên đăng nhập đã thay đổi.")))
-            }
+                } else callback(Result.failure(error))
+            })
+        }, scheduleSync = false) { it.pages("SENT", mapOf("category_id" to categoryId)) }
+    }
+
+    internal fun cancelPendingInvitation(
+        category: WorkspaceCategory, invite: WorkspacePendingInvitation, callback: (Result<Unit>) -> Unit
+    ) {
+        val uid = category.ref.workspace.uid
+        if (uid == null || currentUid != uid) return callback(Result.failure(AuthFailure.CANCELLED))
+        if (category.role != "OWNER") return callback(Result.failure(WorkspaceRequestError("PERMISSION_DENIED")))
+        val categoryId = category.ref.id
+        val request = mapOf("kind" to "CANCEL", "category_id" to categoryId, "invitation_id" to invite.id,
+            "base_revision" to invite.revision, "operation_id" to uuid(), "client_occurred_at" to now)
+        online<Unit>({ result ->
+            result.fold({
+                account(uid, callback = callback) { removePendingInvitation(categoryId, invite.id) }
+            }, { callback(Result.failure(it)) })
+        }) { remote ->
+            if (remote.call(request)["status"] != "CANCELLED") throw WorkspaceRequestError("UNAVAILABLE")
         }
     }
 
     internal fun sharing(categoryId: String, callback: (Result<Boolean>) -> Unit) {
         val uid = currentUid ?: return callback(Result.success(false))
         account(uid, callback = callback) {
-            categoryId !in transferIds() && category(categoryId)?.long("revision")?.let { it > 0 } == true &&
+            categoryId != defaultCategoryId(uid) && category(categoryId)?.long("revision")?.let { it > 0 } == true &&
                 commands().none { it["category_id"] == categoryId }
         }
     }
 
-    internal fun <T> online(callback: (Result<T>) -> Unit, work: (WorkspaceRemote) -> T) {
-        val uid = currentUid ?: return callback(Result.failure(IllegalStateException("Hãy đăng nhập.")))
+    internal fun <T> online(callback: (Result<T>) -> Unit, scheduleSync: Boolean = true, work: (WorkspaceRemote) -> T) {
+        val session = AccountSession.current(context) ?: return callback(Result.failure(AuthFailure.SESSION_REQUIRED))
+        val uid = session.uid
         if (!WorkspaceSync.configured) return callback(Result.failure(WorkspaceRequestError("BACKEND_NOT_CONFIGURED")))
         val app = WorkspaceSync.app(context) ?: return callback(Result.failure(IllegalStateException("Firebase chưa được cấu hình.")))
         remoteExecutor.execute {
-            val result = runCatching { check(currentUid == uid); work(WorkspaceRemote(app, uid)) }
+            val result = runCatching { work(WorkspaceRemote(app, uid) { AccountSession.current(context) === session }) }
             main.post {
-                if (currentUid == uid) {
-                    WorkspaceSync.request(context, uid)
+                if (AccountSession.current(context) === session) {
+                    if (scheduleSync) WorkspaceSync.request(context, uid)
                     callback(result)
                 } else callback(Result.failure(IllegalStateException("Phiên đăng nhập đã thay đổi.")))
             }
@@ -409,7 +345,7 @@ class UnifiedTaskRepository private constructor(private val context: Context) {
                 val live = if (kind in setOf("CATEGORY", "TASK", "SUBTASK")) {
                     sql.rows("SELECT * FROM $table WHERE id=?", id).firstOrNull()
                 } else null
-                command + mapOf("current" to live, "transfer_pending" to (command.string("category_id") in transferIds()))
+                command + mapOf("current" to live, "default_category_pending" to (envelope(command)["kind"] == "ENSURE_DEFAULT_CATEGORY"))
             }
         }
     }
@@ -418,10 +354,7 @@ class UnifiedTaskRepository private constructor(private val context: Context) {
         val uid = currentUid ?: return
         account(uid, true, callback) {
             val command = commands().firstOrNull { it["operation_id"] == operationId && it["status"] == "REJECTED" }
-            check(command?.get("category_id") !in transferIds()) { "Không thể bỏ một phần danh mục đang chuyển." }
-            if (command?.get("entity_type") == "CATEGORY" && command["action"] == "CREATE") {
-                sql.execSQL("DELETE FROM local_category_copies WHERE account_category_id=?", arrayOf(command["category_id"]))
-            }
+            check(command == null || envelope(command)["kind"] != "ENSURE_DEFAULT_CATEGORY") { "Danh mục mặc định còn công việc chờ đồng bộ." }
             sql.execSQL("DELETE FROM sync_queue WHERE actor_uid=? AND operation_id=? AND status='REJECTED'", arrayOf(uid, operationId))
         }
     }

@@ -1,0 +1,30 @@
+<resources>
+    <string name="category_settings_rename">Đổi tên danh mục</string>
+    <string name="category_settings_name">Tên danh mục</string>
+    <string name="category_settings_name_required">Vui lòng nhập tên danh mục.</string>
+    <string name="category_settings_pick_icon">Chọn biểu tượng. Đang chọn %1$s.</string>
+    <string name="category_settings_color_selected">Màu danh mục %1$s</string>
+    <string name="category_settings_share">Chia sẻ</string>
+    <string name="category_settings_delete">Xóa</string>
+    <string name="category_settings_delete_title">Xóa danh mục này?</string>
+    <string name="category_settings_delete_body">%1$s và các công việc bên trong sẽ được chuyển vào thùng rác.</string>
+    <string name="category_settings_delete_error">Không thể xóa danh mục.</string>
+    <string name="category_settings_save">Lưu</string>
+    <string name="category_settings_save_error">Không thể lưu thay đổi danh mục.</string>
+    <style name="CategorySettingsLabel">
+        <item name="android:layout_width">88dp</item>
+        <item name="android:layout_height">wrap_content</item>
+        <item name="android:textSize">14sp</item>
+        <item name="android:textColor">@color/ink</item>
+    </style>
+    <style name="CategorySettingsHeaderAction" parent="PrimaryButton">
+        <item name="android:layout_width">wrap_content</item>
+        <item name="android:layout_height">48dp</item>
+        <item name="android:minWidth">48dp</item>
+        <item name="android:paddingStart">6dp</item>
+        <item name="android:paddingEnd">6dp</item>
+        <item name="android:background">?android:attr/selectableItemBackground</item>
+        <item name="android:backgroundTint">@null</item>
+        <item name="android:textSize">13sp</item>
+    </style>
+</resources>

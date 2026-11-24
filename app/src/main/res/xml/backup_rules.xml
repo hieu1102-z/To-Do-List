@@ -7,6 +7,12 @@
 -->
 <full-backup-content>
     <exclude domain="database" path="." />
+    <exclude domain="file" path="account-avatars/" />
+    <exclude domain="file" path="profile-avatar.jpg" />
+    <exclude domain="sharedpref" path="account_session.xml" />
+    <exclude domain="sharedpref" path="account_reminders.xml" />
+    <exclude domain="sharedpref" path="notification_settings.xml" />
+    <exclude domain="sharedpref" path="guest_profile.xml" />
     <!--
    <include domain="sharedpref" path="."/>
    <exclude domain="sharedpref" path="device.xml"/>

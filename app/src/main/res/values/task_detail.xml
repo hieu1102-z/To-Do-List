@@ -12,6 +12,11 @@
     <string name="task_detail_due">Đến hạn</string>
     <string name="task_detail_participant">Người nhận</string>
     <string name="task_detail_error">Không thể lưu thay đổi. Vui lòng thử lại.</string>
+    <string name="subtask_add_title">Thêm công việc con</string>
+    <string name="subtask_name">Tên công việc con</string>
+    <string name="subtask_add_action">Thêm</string>
+    <string name="subtask_name_required">Vui lòng nhập tên công việc con.</string>
+    <string name="subtask_add_error">Không thể thêm công việc con. Vui lòng thử lại.</string>
     <style name="TaskDetailAction">
         <item name="android:layout_width">48dp</item>
         <item name="android:layout_height">48dp</item>

@@ -1,0 +1,76 @@
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent" android:layout_height="wrap_content"
+    android:background="@drawable/bg_task_delete" android:orientation="vertical"
+    android:padding="16dp" android:focusableInTouchMode="true">
+
+    <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+        android:gravity="center_vertical">
+        <FrameLayout android:layout_width="0dp" android:layout_weight="1" android:layout_height="wrap_content">
+            <LinearLayout android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:gravity="center_vertical" android:layout_gravity="start|center_vertical">
+                <TextView android:id="@+id/heading" android:layout_width="wrap_content" android:layout_weight="1"
+                    android:layout_height="wrap_content" android:maxLines="2" android:ellipsize="end"
+                    android:textSize="20sp" android:textStyle="bold" android:textColor="@color/ink" />
+                <ImageButton android:id="@+id/rename" android:layout_width="48dp" android:layout_height="48dp"
+                    android:padding="12dp" android:background="?android:attr/selectableItemBackgroundBorderless"
+                    android:src="@drawable/ic_category_edit" android:contentDescription="@string/category_settings_rename" />
+            </LinearLayout>
+            <EditText android:id="@+id/nameInput" style="@style/TaskEditorInput"
+                android:layout_width="match_parent" android:layout_marginEnd="4dp" android:layout_gravity="center_vertical"
+                android:inputType="textCapSentences" android:imeOptions="actionDone" android:maxLength="100"
+                android:hint="@string/category_settings_name" android:visibility="gone" />
+        </FrameLayout>
+        <Button android:id="@+id/share" style="@style/CategorySettingsHeaderAction"
+            android:text="@string/category_settings_share" android:textColor="@color/editor_brand"
+            android:visibility="gone" />
+        <Button android:id="@+id/delete" style="@style/CategorySettingsHeaderAction"
+            android:text="@string/category_settings_delete" android:textColor="@color/task_delete_danger" />
+    </LinearLayout>
+
+    <ScrollView android:layout_width="match_parent" android:layout_height="wrap_content"
+        android:layout_weight="1" android:layout_marginTop="8dp">
+        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:orientation="vertical">
+            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:background="@drawable/bg_task_info" android:padding="12dp"
+                android:orientation="vertical">
+                <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+                    android:gravity="center_vertical">
+                    <TextView style="@style/CategorySettingsLabel" android:labelFor="@id/iconChoice"
+                        android:text="@string/category_appearance_icon" />
+                    <TextView android:id="@+id/iconChoice" android:layout_width="0dp" android:layout_weight="1"
+                        android:layout_height="48dp" android:gravity="center_vertical|start"
+                        android:paddingStart="10dp" android:paddingEnd="10dp"
+                        android:drawableEnd="@drawable/ic_dropdown" android:drawablePadding="8dp"
+                        android:background="?android:attr/selectableItemBackground"
+                        android:textSize="14sp" android:textColor="@color/ink" />
+                </LinearLayout>
+                <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+                    android:gravity="center_vertical">
+                    <TextView style="@style/CategorySettingsLabel" android:text="@string/category_appearance_color" />
+                    <View android:id="@+id/selectedColor" android:layout_width="20dp" android:layout_height="20dp"
+                        android:layout_marginStart="10dp" android:importantForAccessibility="yes" />
+                </LinearLayout>
+                <LinearLayout android:id="@+id/palette" android:layout_width="match_parent"
+                    android:layout_height="wrap_content" android:layout_marginTop="4dp"
+                    android:orientation="vertical" />
+            </LinearLayout>
+            <LinearLayout android:id="@+id/memberSection" android:layout_width="match_parent"
+                android:layout_height="wrap_content" android:orientation="vertical" />
+        </LinearLayout>
+    </ScrollView>
+
+    <TextView android:id="@+id/error" android:layout_width="match_parent" android:layout_height="wrap_content"
+        android:layout_marginTop="8dp" android:accessibilityLiveRegion="polite"
+        android:textColor="@color/task_delete_danger" android:textSize="13sp" android:visibility="gone" />
+    <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+        android:layout_marginTop="12dp" android:baselineAligned="false">
+        <Button android:id="@+id/close" style="@style/TaskDeleteButton" android:backgroundTint="@null"
+            android:background="@drawable/bg_task_delete_cancel" android:textColor="@color/ink"
+            android:text="@string/workspace_dialog_close" />
+        <Button android:id="@+id/save" style="@style/TaskDeleteButton" android:layout_marginStart="12dp"
+            android:backgroundTint="@null" android:background="@drawable/bg_primary"
+            android:textColor="@android:color/white" android:text="@string/category_settings_save"
+            android:visibility="gone" />
+    </LinearLayout>
+</LinearLayout>

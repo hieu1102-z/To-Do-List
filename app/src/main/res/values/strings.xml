@@ -18,7 +18,6 @@
     <string name="confirm_password_hint">Nhập lại mật khẩu</string>
     <string name="password_show">Hiện mật khẩu</string>
     <string name="password_hide">Ẩn mật khẩu</string>
-    <string name="continue_offline">Tiếp tục dùng offline</string>
     <string name="register_created">Tài khoản đã được tạo</string>
     <string name="verify_email_title">Xác minh email</string>
     <string name="email_verified">Email đã được xác minh</string>
@@ -32,4 +31,7 @@
     <string name="verification_resend">Gửi lại email xác minh</string>
     <string name="verification_wait">Gửi lại sau %1$d giây</string>
     <string name="go_home">Về trang chủ</string>
+    <string name="home_category_all">Tất cả</string>
+    <string name="home_category_picker">Chọn danh mục. Đang hiển thị %1$s.</string>
+    <string name="home_task_count">· %1$d công việc</string>
 </resources>

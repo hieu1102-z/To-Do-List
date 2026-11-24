@@ -6,6 +6,12 @@
 <data-extraction-rules>
     <cloud-backup>
         <exclude domain="database" path="." />
+        <exclude domain="file" path="account-avatars/" />
+        <exclude domain="file" path="profile-avatar.jpg" />
+        <exclude domain="sharedpref" path="account_session.xml" />
+        <exclude domain="sharedpref" path="account_reminders.xml" />
+        <exclude domain="sharedpref" path="notification_settings.xml" />
+        <exclude domain="sharedpref" path="guest_profile.xml" />
         <!-- TODO: Use <include> and <exclude> to control what is backed up.
         <include .../>
         <exclude .../>
@@ -13,5 +19,11 @@
     </cloud-backup>
     <device-transfer>
         <exclude domain="database" path="." />
+        <exclude domain="file" path="account-avatars/" />
+        <exclude domain="file" path="profile-avatar.jpg" />
+        <exclude domain="sharedpref" path="account_session.xml" />
+        <exclude domain="sharedpref" path="account_reminders.xml" />
+        <exclude domain="sharedpref" path="notification_settings.xml" />
+        <exclude domain="sharedpref" path="guest_profile.xml" />
     </device-transfer>
 </data-extraction-rules>

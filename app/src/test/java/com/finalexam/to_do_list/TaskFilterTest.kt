@@ -1,6 +1,11 @@
 package com.finalexam.to_do_list
 
+import com.finalexam.to_do_list.model.local.relation.HomeTask
+import com.finalexam.to_do_list.model.repository.CategoryRef
+import com.finalexam.to_do_list.model.repository.WorkspaceRef
+import com.finalexam.to_do_list.model.repository.defaultCategoryId
 import com.finalexam.to_do_list.util.TaskFilter
+import com.finalexam.to_do_list.util.includesHomeTask
 import org.junit.Assert.*
 import org.junit.Test
 import java.time.LocalDate
@@ -38,5 +43,30 @@ class TaskFilterTest {
         assertTrue(matches(TaskFilter.TODAY, at = due(0, 0)))
         assertTrue(matches(TaskFilter.TODAY, at = due(0, 23)))
         assertFalse(matches(TaskFilter.TODAY, at = due(1, 0)))
+    }
+
+    @Test fun allCategoriesIncludesTasksFromTheHiddenDefault() {
+        val workspace = WorkspaceRef("account")
+        val defaultTask = HomeTask("draft", "Draft", "", defaultCategoryId("account"), "", due(0),
+            2, false, null, 0, 0, workspaceUid = workspace.uid)
+        val namedTask = defaultTask.copy(id = "study-task", categoryId = "study", category = "Học tập")
+        val tasks = listOf(defaultTask, namedTask)
+
+        assertEquals(tasks, tasks.filter { TaskFilter.TODAY.includesHomeTask(it, null, null, today, zone) })
+        val study = CategoryRef(workspace, "study")
+        assertEquals(listOf(namedTask), tasks.filter { TaskFilter.TODAY.includesHomeTask(it, study, null, today, zone) })
+    }
+
+    @Test fun selectedCategoryStillAppliesTheActiveDateAndStatusFilters() {
+        val study = CategoryRef(WorkspaceRef("account"), "study")
+        val tomorrowTask = HomeTask("task", "Task", "", study.id, "Học tập", due(1),
+            2, false, null, 0, 0, workspaceUid = study.workspace.uid)
+        val completed = tomorrowTask.copy(done = true, completedAt = now)
+
+        assertFalse(TaskFilter.TODAY.includesHomeTask(tomorrowTask, study, null, today, zone))
+        assertTrue(TaskFilter.WEEK.includesHomeTask(tomorrowTask, study, null, today, zone))
+        assertTrue(TaskFilter.DONE.includesHomeTask(completed, study, null, today, zone))
+        assertFalse(TaskFilter.DONE.includesHomeTask(tomorrowTask, study, null, today, zone))
+        assertTrue(TaskFilter.TODAY.includesHomeTask(tomorrowTask, study, today.plusDays(1), today, zone))
     }
 }

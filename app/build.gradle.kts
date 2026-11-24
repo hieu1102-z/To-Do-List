@@ -64,7 +64,7 @@ android {
 
 ksp { arg("room.schemaLocation", "$projectDir/schemas") }
 
-// Guest mode builds without a Firebase project. Never generate placeholder credentials.
+// A checkout can build before Firebase is configured. Sign-in requires valid Firebase configuration.
 val firebaseConfig = file("google-services.json")
 if (firebaseConfig.exists()) {
     val config = JsonSlurper().parse(firebaseConfig) as Map<*, *>

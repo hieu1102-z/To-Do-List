@@ -31,12 +31,12 @@
                     <TextView style="@style/TaskDetailKey" android:text="@string/task_editor_reminder"/>
                     <TextView android:id="@+id/reminder" style="@style/TaskDetailValue"/>
                 </LinearLayout>
-                <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:gravity="center_vertical" android:layout_marginTop="16dp">
+                <LinearLayout android:id="@+id/categoryRow" android:layout_width="match_parent" android:layout_height="wrap_content" android:gravity="center_vertical" android:layout_marginTop="16dp">
                     <ImageView style="@style/TaskDetailIcon" android:src="@drawable/ic_detail_folder"/>
                     <TextView style="@style/TaskDetailKey" android:text="@string/task_editor_category"/>
                     <TextView android:id="@+id/category" style="@style/TaskDetailValue"/>
                 </LinearLayout>
-                <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content" android:gravity="center_vertical" android:layout_marginTop="16dp">
+                <LinearLayout android:id="@+id/participantRow" android:layout_width="match_parent" android:layout_height="wrap_content" android:gravity="center_vertical" android:layout_marginTop="16dp">
                     <ImageView style="@style/TaskDetailIcon" android:src="@drawable/ic_detail_person"/>
                     <TextView style="@style/TaskDetailKey" android:text="@string/task_detail_participant"/>
                     <TextView android:id="@+id/participant" style="@style/TaskDetailValue"/>

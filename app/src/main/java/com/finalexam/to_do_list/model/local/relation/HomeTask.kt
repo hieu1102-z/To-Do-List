@@ -20,12 +20,11 @@ data class HomeTask(
     val revision: Long = 0,
     val memberRole: String = "OWNER",
     val workspaceUid: String? = null,
-    val syncLabel: String = "Local",
-    val transferring: Boolean = false
+    val syncLabel: String = "",
+    val isCategoryShared: Boolean = false
 ) {
-    val canEdit get() = !transferring && (memberRole == "OWNER" || memberRole == "EDITOR")
+    val canEdit get() = (memberRole == "OWNER" || memberRole == "EDITOR")
     val sourceIcon get() = when (syncLabel) {
-        "Local" -> "▣"
         "Đã đồng bộ" -> "☁"
         "Chờ đồng bộ" -> "↻"
         else -> "⚠"

@@ -15,6 +15,7 @@ import android.widget.LinearLayout
 import android.widget.TextView
 import androidx.activity.ComponentActivity
 import androidx.core.view.ViewCompat
+import androidx.core.view.isVisible
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import com.finalexam.to_do_list.R
@@ -57,6 +58,9 @@ internal object TaskDetailDialog {
         binding.due.text = TaskDetailText.due(task)
         binding.reminder.text = TaskDetailText.reminder(task)
         binding.category.text = task.category
+        binding.categoryRow.isVisible = task.category.isNotBlank()
+        val showParticipant = binding.categoryRow.isVisible && task.isCategoryShared
+        binding.participantRow.isVisible = showParticipant
         binding.participant.text = task.participantNames?.takeIf { it.isNotBlank() }
             ?: activity.getString(R.string.task_detail_no_participant)
         binding.description.text = task.description.takeIf { it.isNotBlank() }
@@ -124,13 +128,25 @@ internal object TaskDetailDialog {
             }
         }
         binding.addSubtask.setOnClickListener {
-            val input = EditText(activity).apply { hint = "Tên công việc con"; setSingleLine(true); filters = arrayOf(android.text.InputFilter.LengthFilter(200)) }
-            AlertDialog.Builder(activity).setTitle("Thêm công việc con").setView(input)
-                .setNegativeButton("Hủy", null).setPositiveButton("Thêm") { _, _ ->
-                    repository.addSubtask(task, input.text.toString()) { added ->
-                        if (added.isSuccess) showSubtasks() else binding.error.apply { visibility = View.VISIBLE; text = added.exceptionOrNull()?.message ?: "Không thể thêm công việc con." }
-                    }
-                }.show()
+            WorkspaceDialogs(activity).form(
+                title = activity.getString(R.string.subtask_add_title),
+                label = activity.getString(R.string.subtask_name),
+                submitLabel = activity.getString(R.string.subtask_add_action),
+                maxLength = 200
+            ) { title, finish ->
+                if (title.isBlank()) {
+                    finish(activity.getString(R.string.subtask_name_required))
+                    return@form
+                }
+                repository.addSubtask(task, title) { result ->
+                    result.fold({
+                        finish(null)
+                        showSubtasks()
+                    }, {
+                        finish(activity.getString(R.string.subtask_add_error))
+                    })
+                }
+            }
         }
         showSubtasks()
         binding.completeLabel.setText(if (task.done) R.string.task_detail_uncomplete else R.string.task_detail_complete)
@@ -146,7 +162,7 @@ internal object TaskDetailDialog {
             binding.delete.visibility = View.GONE
             binding.addSubtask.visibility = View.GONE
             binding.complete.visibility = View.GONE
-        } else if (task.workspaceUid != null) {
+        } else if (showParticipant && task.workspaceUid != null) {
             binding.participant.setOnClickListener {
                 repository.participant(task) { result ->
                     if (result.isSuccess) { dialog.dismiss(); onChanged() }

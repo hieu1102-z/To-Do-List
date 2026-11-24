@@ -40,7 +40,7 @@ object NotificationHelper {
         context: Context,
         taskId: String,
         taskTitle: String,
-        uid: String? = null
+        uid: String
     ) {
         if (
             Build.VERSION.SDK_INT >= 33 &&

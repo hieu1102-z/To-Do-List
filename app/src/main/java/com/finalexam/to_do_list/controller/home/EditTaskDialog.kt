@@ -21,7 +21,6 @@ import com.finalexam.to_do_list.R
 import com.finalexam.to_do_list.databinding.ActivityAddTaskBinding
 import com.finalexam.to_do_list.model.local.relation.HomeTask
 import com.finalexam.to_do_list.model.repository.UnifiedTaskRepository
-import com.finalexam.to_do_list.util.TaskDefaults
 import com.finalexam.to_do_list.util.TaskDetailText
 import java.time.Instant
 import java.time.ZoneId
@@ -39,7 +38,6 @@ internal object EditTaskDialog {
         var dueAt = task.dueAt
         var priority = task.priority
         var repeatType = task.repeatType
-        var category = task.category
         var reminderChanged = false
         val originalOffset = task.remindAt?.let { at -> task.dueAt?.minus(at)?.div(60_000L) }
         var reminderMinutes: Long? = originalOffset
@@ -82,25 +80,8 @@ internal object EditTaskDialog {
         fun adapter(values: List<String>) = ArrayAdapter(activity, R.layout.item_task_selected, values).apply {
             setDropDownViewResource(R.layout.item_task_dropdown)
         }
-        var categories = (TaskDefaults.categories + task.category).distinct()
-        form.categories.adapter = adapter(categories)
-        form.categories.setSelection(categories.indexOf(category))
-        form.categories.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
-            override fun onNothingSelected(parent: AdapterView<*>?) = Unit
-            override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) { category = categories[position] }
-        }
-        if (task.workspaceUid != null) {
-            categories = listOf(task.category)
-            form.categories.adapter = adapter(categories)
-        } else repository.categories { result ->
-            result.onSuccess { names ->
-                if (!dialog.isShowing || names.isEmpty()) return@onSuccess
-                categories = (names.filter { it.ref.workspace.uid == null }.map { it.name } + task.category).distinct()
-                form.categories.adapter = adapter(categories)
-                form.categories.setSelection(categories.indexOf(category))
-            }
-        }
-        form.categories.isEnabled = task.workspaceUid == null
+        form.categories.adapter = adapter(listOf(task.category))
+        form.categories.isEnabled = false
         form.repeats.adapter = adapter(listOf("Không", "Hằng ngày", "Hằng tuần", "Hằng tháng"))
         form.repeats.setSelection(initialRepeat)
         form.repeats.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
@@ -162,7 +143,7 @@ internal object EditTaskDialog {
                 }
             }
             repository.updateTask(task, form.taskTitle.text.toString(), form.description.text.toString(),
-                category, priority, dueAt, if (reminderChanged) reminderMinutes else null,
+                priority, dueAt, if (reminderChanged) reminderMinutes else null,
                 reminderChanged, repeatType, callback)
         }
         val observer = LifecycleEventObserver { _, event -> if (event == Lifecycle.Event.ON_DESTROY) dialog.dismiss() }

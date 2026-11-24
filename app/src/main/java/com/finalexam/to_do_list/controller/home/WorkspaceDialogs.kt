@@ -7,6 +7,7 @@ import android.os.Build
 import android.text.InputFilter
 import android.text.InputType
 import android.view.Gravity
+import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
 import android.view.accessibility.AccessibilityManager
@@ -38,8 +39,10 @@ internal class WorkspaceDialogs(private val activity: ComponentActivity) {
         message: String? = null,
         primary: Action? = null,
         secondary: Action = Action(closeLabel, Tone.NEUTRAL) {},
-        extra: Action? = null
+        extra: Action? = null,
+        onCancel: (() -> Unit)? = null
     ) = panel(title, message) { dialog, binding ->
+        if (onCancel != null) dialog.setOnCancelListener { onCancel() }
         binding.secondary.bind(secondary, dialog)
         primary?.let { binding.primary.bind(it, dialog) }
         extra?.let { binding.extra.bind(it, dialog) }
@@ -63,6 +66,12 @@ internal class WorkspaceDialogs(private val activity: ComponentActivity) {
                 })
             }
         }
+    }
+
+    fun customChoice(title: String, content: View, apply: Action) = panel(title, null) { dialog, binding ->
+        binding.options.addView(content)
+        binding.secondary.bind(Action(cancelLabel, Tone.NEUTRAL) {}, dialog)
+        binding.primary.bind(apply, dialog)
     }
 
     fun form(

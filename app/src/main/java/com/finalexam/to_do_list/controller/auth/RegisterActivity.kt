@@ -45,7 +45,6 @@ class RegisterActivity : WorkspaceActivity() {
         })[RegisterViewModel::class.java]
         binding.back.setOnClickListener { leave() }
         binding.toLogin.setOnClickListener { leave() }
-        binding.continueOffline.setOnClickListener { leave() }
         binding.goHome.setOnClickListener { leave() }
         onBackPressedDispatcher.addCallback(this) { leave() }
         binding.createAccount.setOnClickListener { submit() }

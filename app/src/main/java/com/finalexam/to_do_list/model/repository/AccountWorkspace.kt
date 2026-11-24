@@ -9,6 +9,8 @@ import com.finalexam.to_do_list.model.local.entity.SyncQueueEntity
 import com.finalexam.to_do_list.model.local.relation.HomeTask
 import com.finalexam.to_do_list.model.local.relation.TrashTask
 import org.json.JSONObject
+import java.security.MessageDigest
+import java.nio.ByteBuffer
 import java.text.Normalizer
 import java.util.Locale
 import java.util.UUID
@@ -18,10 +20,9 @@ data class CategoryRef(val workspace: WorkspaceRef, val id: String)
 data class TaskRef(val workspace: WorkspaceRef, val id: String)
 data class WorkspaceCategory(
     val ref: CategoryRef, val name: String, val role: String, val owner: String = "", val revision: Long = 0,
-    val transferring: Boolean = false
+    val color: String? = null, val icon: String? = null
 ) {
-    val label get() = name + if (ref.workspace.uid == null) " · Local" else
-        " · Tài khoản" + if (owner.isNotBlank() && role != "OWNER") " · $owner" else ""
+    val label get() = if (name.isBlank() || role == "OWNER" || owner.isBlank()) name else "$name · $owner"
 }
 
 internal typealias Row = Map<String, Any?>
@@ -36,6 +37,13 @@ internal fun Row.string(key: String) = get(key) as String
 internal fun Row.long(key: String) = (get(key) as? Number)?.toLong() ?: 0L
 internal fun Row.optionalLong(key: String) = (get(key) as? Number)?.toLong()
 internal fun uuid(): String = UUID.randomUUID().toString()
+internal fun defaultCategoryId(uid: String): String {
+    val bytes = MessageDigest.getInstance("SHA-256").digest("todolist/default-category/v1:$uid".toByteArray(Charsets.UTF_8))
+    bytes[6] = ((bytes[6].toInt() and 0x0f) or 0x80).toByte()
+    bytes[8] = ((bytes[8].toInt() and 0x3f) or 0x80).toByte()
+    val buffer = ByteBuffer.wrap(bytes)
+    return UUID(buffer.long, buffer.long).toString()
+}
 internal fun normalizedName(name: String) = Normalizer.normalize(name.trim(), Normalizer.Form.NFC)
 internal fun nameKey(name: String) = normalizedName(name).lowercase(Locale.ROOT)
 
@@ -92,7 +100,6 @@ internal class AccountWorkspace(val uid: String, val database: AppDatabase) : Au
 
     fun home(): List<HomeTask> {
         val queue = commands().groupBy { it.string("category_id") }
-        val transferring = transferIds()
         return database.tasks().homeTasks(uid).map { task ->
             val pending = queue[task.categoryId].orEmpty().filter {
                 it.string("entity_id").substringBefore('/') == task.id || it.string("entity_type") == "CATEGORY"
@@ -103,106 +110,91 @@ internal class AccountWorkspace(val uid: String, val database: AppDatabase) : Au
                 pending.isNotEmpty() || task.revision == 0L -> "Chờ đồng bộ"
                 else -> "Đã đồng bộ"
             }
-            task.copy(workspaceUid = uid, syncLabel = status, transferring = task.categoryId in transferring)
+            task.copy(workspaceUid = uid, syncLabel = status, category = task.category.takeUnless { task.categoryId == defaultCategoryId(uid) }.orEmpty())
         }
     }
 
     fun categories(): List<WorkspaceCategory> = sql.rows("""
-        SELECT c.*, m.role, u.full_name, x.category_id IS NOT NULL AS transferring
+        SELECT c.*, m.role, u.full_name
         FROM categories c JOIN category_members m ON m.category_id=c.id
         JOIN users u ON u.uid=c.owner_uid
-        LEFT JOIN local_category_transfers x ON x.category_id=c.id
-        WHERE c.deleted_at IS NULL AND m.user_uid=? AND m.status='ACTIVE' ORDER BY c.name
+        WHERE c.deleted_at IS NULL AND c.name_key<>'' AND m.user_uid=? AND m.status='ACTIVE' ORDER BY c.name
     """.trimIndent(), uid).map {
         WorkspaceCategory(CategoryRef(WorkspaceRef(uid), it.string("id")), it.string("name"),
-            it.string("role"), it.string("full_name"), it.long("revision"), it.long("transferring") == 1L)
+            it.string("role"), it.string("full_name"), it.long("revision"), it["color"] as? String, it["icon"] as? String)
     }
 
     fun category(cid: String) = sql.rows("SELECT * FROM categories WHERE id=?", cid).singleOrNull()
     fun role(cid: String) = database.tasks().role(cid, uid)
     fun requireRole(cid: String, vararg roles: String) {
-        check(cid !in transferIds()) { "Hãy chờ danh mục chuyển xong trước khi thay đổi." }
         check(role(cid) in roles) { "Bạn không có quyền thực hiện thao tác này." }
     }
 
-    fun createCategory(label: String, id: String = uuid(), color: String? = null): String {
+    fun createCategory(label: String, id: String = uuid(), color: String? = null, icon: String? = null): String {
         val name = normalizedName(label)
         require(name.length in 1..100) { "Tên danh mục cần từ 1 đến 100 ký tự." }
         require(database.tasks().categoryId(uid, nameKey(name)) == null) { "Danh mục này đã tồn tại." }
         val time = now
-        upsert("categories", mapOf("id" to id, "owner_uid" to uid, "name" to name, "name_key" to nameKey(name),
-            "created_at" to time, "client_updated_at" to time, "color" to color))
+        val style = if (icon == null) mapOf("color" to color) else mapOf("color" to color, "icon" to icon)
+        upsert("categories", style + mapOf("id" to id, "owner_uid" to uid, "name" to name, "name_key" to nameKey(name),
+            "created_at" to time, "client_updated_at" to time))
         upsert("category_members", mapOf("category_id" to id, "user_uid" to uid, "role" to "OWNER", "joined_at" to time))
-        enqueue(id, "CATEGORY", id, "CREATE", 0, mapOf("name" to name, "color" to color))
+        enqueue(id, "CATEGORY", id, "CREATE", 0, style + ("name" to name))
         return id
     }
 
-    fun transferIds(): Set<String> = sql.rows(
-        "SELECT category_id FROM local_category_transfers WHERE owner_uid=?", uid
-    ).map { it.string("category_id") }.toSet()
+    fun updateCategory(category: WorkspaceCategory, title: String, color: String?, icon: String?): WorkspaceCategory {
+        val cid = category.ref.id
+        check(category.ref.workspace.uid == uid && cid != defaultCategoryId(uid))
+        requireRole(cid, "OWNER")
+        val old = checkNotNull(this.category(cid))
+        check(old["deleted_at"] == null)
+        check(old.long("revision") == category.revision && old["name"] == category.name &&
+            old["color"] == category.color && old["icon"] == category.icon) { "Danh mục vừa thay đổi. Hãy mở lại." }
 
-    fun transferIn(source: LocalCategoryTransfer) = transaction {
-        val request = source.request
-        val cid = request.id
-        check(request.owner == uid)
-        if (cid in transferIds()) return@transaction
-        check(category(cid) == null) { "Danh mục này đã tồn tại trong tài khoản." }
-        check(database.tasks().categoryId(uid, nameKey(request.name)) == null) {
-            "Tài khoản đã có danh mục cùng tên. Hãy chọn tên khác."
+        val name = normalizedName(title)
+        require(name.length in 1..100) { "Tên danh mục cần từ 1 đến 100 ký tự." }
+        val fields = mapOf("name" to name, "color" to color, "icon" to icon)
+            .filter { (key, value) -> old[key] != value }
+        if (fields.isEmpty()) return category
+
+        val nameFields = if ("name" in fields) {
+            val key = nameKey(name)
+            val conflictingId = database.tasks().categoryId(uid, key)
+            require(conflictingId == null || conflictingId == cid) { "Danh mục này đã tồn tại." }
+            mapOf("name_key" to key)
+        } else emptyMap()
+
+        upsert("categories", fields + nameFields + mapOf("id" to cid,
+            "client_updated_at" to maxOf(now, old.long("client_updated_at") + 1)))
+        enqueue(cid, "CATEGORY", cid, "UPDATE", category.revision, fields)
+        return category.copy(name = name, color = color, icon = icon)
+    }
+
+    fun ensureDefaultCategory(): String = transaction {
+        val id = defaultCategoryId(uid)
+        val existing = category(id)
+        if (existing == null) {
+            val time = now
+            upsert("categories", mapOf("id" to id, "owner_uid" to uid, "name" to "Mặc định",
+                "name_key" to "", "created_at" to time, "client_updated_at" to time))
+            upsert("category_members", mapOf("category_id" to id, "user_uid" to uid, "role" to "OWNER", "joined_at" to time))
+            enqueue(id, "CATEGORY", id, "ENSURE_DEFAULT_CATEGORY", 0)
+        } else {
+            check(existing["name_key"] == "" && existing["owner_uid"] == uid && role(id) == "OWNER") {
+                "Định danh danh mục mặc định đang được sử dụng."
+            }
         }
-        sql.execSQL("DELETE FROM sync_queue WHERE category_id=? AND status='REJECTED'", arrayOf(cid))
-        createCategory(request.name, id = cid, color = source.category["color"] as String?)
-        sql.execSQL("""INSERT INTO local_category_transfers(category_id,owner_uid,source_name_key,name)
-            VALUES(?,?,?,?)""", request.bindings)
-        for (task in source.tasks) {
-            val id = task.string("id")
-            check(database.tasks().findIncludingDeleted(id) == null) { "Một công việc đã tồn tại trong tài khoản." }
-            val fields = task.filterKeys { it in setOf("title", "description", "due_at", "priority", "is_done",
-                "completed_at", "repeat_type", "timezone", "repeat_anchor_day", "created_at") }
-            upsert("tasks", task + mapOf("category_id" to cid, "created_by_uid" to uid))
-            enqueue(cid, "TASK", id, "CREATE", 0, fields)
-            source.subtasks[id].orEmpty().forEach { subtask ->
-                val subId = subtask.string("id")
-                check(sql.rows("SELECT id FROM subtasks WHERE id=?", subId).isEmpty()) {
-                    "Một công việc con đã tồn tại trong tài khoản."
-                }
-                val fieldsSub = subtask.filterKeys { it in setOf("title", "is_done", "sort_order") }
-                upsert("subtasks", subtask)
-                enqueue(cid, "SUBTASK", "$id/$subId", "CREATE", 0, fieldsSub)
-                if (subtask["deleted_at"] != null) enqueue(cid, "SUBTASK", "$id/$subId", "TRASH", 0)
-            }
-            source.reminders[id]?.let { reminder ->
-                val settings = reminder.filterKeys { it in setOf("remind_at", "is_enabled") }
-                upsert("task_reminders", reminder + mapOf("user_uid" to uid, "deleted_at" to null))
-                enqueue(cid, "REMINDER", "$id/$uid", "CREATE", 0, settings)
-            }
-            if (id in source.participants) {
-                upsert("task_participants", mapOf("task_id" to id, "category_id" to cid, "user_uid" to uid, "joined_at" to now))
-                enqueue(cid, "PARTICIPANT", "$id/$uid", "CREATE", 0)
-            }
-            // The remote parent stays active until all of its child commands finish.
-            if (task["deleted_at"] != null) enqueue(cid, "TASK", id, "TRASH", 0)
-        }
+        id
     }
 
-    fun clearTransfer(cid: String) {
-        sql.execSQL("DELETE FROM local_category_transfers WHERE category_id=? AND owner_uid=?", arrayOf(cid, uid))
-    }
-
-    fun releaseRejectedTransfer(cid: String) = transaction {
-        sql.execSQL("DELETE FROM categories WHERE id=? AND revision=0", arrayOf(cid))
-        sql.execSQL("DELETE FROM sync_queue WHERE category_id=? AND status<>'REJECTED'", arrayOf(cid))
-        clearTransfer(cid)
-    }
-
-    fun todoCategory(): String = database.tasks().categoryId(uid, "to do") ?: createCategory("to do")
     fun commands(): List<Row> = sql.rows("SELECT * FROM sync_queue WHERE actor_uid=? ORDER BY rowid", uid)
 
     fun enqueue(cid: String, type: String, id: String, kind: String, base: Long, payload: Row = emptyMap()) {
         val membership = sql.rows("SELECT revision FROM category_members WHERE category_id=? AND user_uid=?", cid, uid)
             .firstOrNull()?.long("revision") ?: 0
         val action = when (kind) {
-            "CREATE" -> "CREATE"
+            "CREATE", "ENSURE_DEFAULT_CATEGORY" -> "CREATE"
             "PURGE", "WITHDRAW", "REMOVE_REMINDER" -> "DELETE"
             else -> "UPDATE"
         }
@@ -268,7 +260,7 @@ internal class AccountWorkspace(val uid: String, val database: AppDatabase) : Au
         sql.execSQL("DELETE FROM sync_queue WHERE operation_id=?", arrayOf(id))
         if (command["entity_type"] == "CATEGORY" && command["action"] == "DELETE") {
             sql.execSQL("DELETE FROM sync_state WHERE user_uid=? AND category_id=?", arrayOf(uid, command["category_id"]))
-            sql.execSQL("DELETE FROM local_category_copies WHERE account_category_id=?", arrayOf(command["category_id"]))
+
         }
     }
 
@@ -277,7 +269,7 @@ internal class AccountWorkspace(val uid: String, val database: AppDatabase) : Au
         sql.execSQL("""UPDATE sync_queue SET status=?,last_error=?,retry_count=retry_count+1,next_retry_at=?
             WHERE operation_id=?""", arrayOf(if (retry) "FAILED" else "REJECTED", reason,
             if (retry) now + delay else null, command["operation_id"]))
-        if (command.string("category_id") in transferIds()) return@transaction
+        if (envelope(command)["kind"] == "ENSURE_DEFAULT_CATEGORY") return@transaction
         if (!retry) {
             var previous = listOf(command.string("operation_id"))
             while (previous.isNotEmpty()) {
@@ -315,10 +307,9 @@ internal class AccountWorkspace(val uid: String, val database: AppDatabase) : Au
     }
 
     fun dropCategory(cid: String) = transaction {
-        if (cid in transferIds()) return@transaction
         sql.execSQL("DELETE FROM categories WHERE id=?", arrayOf(cid))
         sql.execSQL("DELETE FROM sync_state WHERE category_id=?", arrayOf(cid))
-        sql.execSQL("DELETE FROM local_category_copies WHERE account_category_id=?", arrayOf(cid))
+
         sql.execSQL("DELETE FROM sync_queue WHERE actor_uid=? AND category_id=?", arrayOf(uid, cid))
     }
 
@@ -387,9 +378,8 @@ internal class AccountWorkspace(val uid: String, val database: AppDatabase) : Au
             val parentActive = when (type) { "CATEGORY" -> "1=1"; "TASK" -> "c.deleted_at IS NULL"; else -> "c.deleted_at IS NULL AND t.deleted_at IS NULL" }
             sql.rows("""SELECT $fields,m.role FROM $from JOIN category_members m ON m.category_id=c.id
                     WHERE m.user_uid=? AND m.status='ACTIVE' AND m.role IN ('OWNER','EDITOR')
-                    AND NOT EXISTS (SELECT 1 FROM local_category_transfers x WHERE x.category_id=c.id)
-                    AND $deleted IS NOT NULL AND $parentActive""", uid).mapTo(result) {
-                TrashTask(it.string("id"), it.string("title"), it.string("category"), it.long("deleted_at"),
+                    AND $deleted IS NOT NULL AND $parentActive AND (?<>'CATEGORY' OR c.name_key<>'')""", uid, type).mapTo(result) {
+                TrashTask(it.string("id"), it.string("title"), it.string("category").takeUnless { _ -> it.string("cid") == defaultCategoryId(uid) }.orEmpty(), it.long("deleted_at"),
                     it.string("cid"), uid, it.string("role"), type, it["parent"] as String?, it.long("revision"))
             }
         }

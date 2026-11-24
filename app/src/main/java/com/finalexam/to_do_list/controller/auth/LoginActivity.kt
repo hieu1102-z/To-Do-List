@@ -32,7 +32,7 @@ class LoginActivity : WorkspaceActivity() {
     private var visiblePassword = false
     private var busy = false
     private val registration = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
-        if (result.resultCode == RESULT_OK) { setResult(RESULT_OK); finish() }
+        if (result.resultCode == RESULT_OK) enterWorkspace()
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -49,21 +49,6 @@ class LoginActivity : WorkspaceActivity() {
             }
         })[LoginViewModel::class.java]
         binding.back.setOnClickListener { leave() }
-
-        binding.continueOffline.setOnClickListener {
-            viewModel.leave()
-
-            val intent = Intent(
-                this@LoginActivity,
-                com.finalexam.to_do_list.MainActivity::class.java
-            ).apply {
-                flags = Intent.FLAG_ACTIVITY_NEW_TASK or
-                        Intent.FLAG_ACTIVITY_CLEAR_TASK
-            }
-
-            startActivity(intent)
-            finish()
-        }
 
         onBackPressedDispatcher.addCallback(this) { leave() }
         binding.togglePassword.setOnClickListener {
@@ -96,16 +81,7 @@ class LoginActivity : WorkspaceActivity() {
                                 Toast.LENGTH_SHORT
                             ).show()
 
-                            val intent = Intent(
-                                this@LoginActivity,
-                                com.finalexam.to_do_list.MainActivity::class.java
-                            ).apply {
-                                flags = Intent.FLAG_ACTIVITY_NEW_TASK or
-                                        Intent.FLAG_ACTIVITY_CLEAR_TASK
-                            }
-
-                            startActivity(intent)
-                            finish()
+                            enterWorkspace()
                         }
                         is LoginState.Error -> showError(message(state.failure))
                         LoginState.Loading -> binding.error.visibility = View.GONE
@@ -114,7 +90,13 @@ class LoginActivity : WorkspaceActivity() {
                 }
             }
         }
-        if (!auth.configured) showError("Đăng nhập chưa sẵn sàng. Bạn vẫn có thể tiếp tục dùng offline.")
+        if (!auth.configured) showError("Đăng nhập chưa sẵn sàng.")
+    }
+
+    private fun enterWorkspace() {
+        startActivity(Intent(this, com.finalexam.to_do_list.MainActivity::class.java)
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK))
+        finish()
     }
 
     private fun leave() { viewModel.leave(); binding.password.text.clear(); finish() }
