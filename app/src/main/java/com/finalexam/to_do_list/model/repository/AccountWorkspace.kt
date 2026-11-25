@@ -12,6 +12,8 @@ import org.json.JSONObject
 import java.security.MessageDigest
 import java.nio.ByteBuffer
 import java.text.Normalizer
+import java.time.Instant
+import java.time.ZoneId
 import java.util.Locale
 import java.util.UUID
 
@@ -29,6 +31,7 @@ internal typealias Row = Map<String, Any?>
 internal data class WorkspaceSnapshot(
     val category: Row, val role: String, val seq: Long, val groups: Map<String, List<Row>>, val profiles: List<Row>
 )
+internal data class RestoreDisplayContext(val taskTitle: String, val categoryLabel: String?)
 internal val snapshotGroups = linkedMapOf(
     "MEMBER" to "category_members", "TASK" to "tasks", "SUBTASK" to "subtasks",
     "PARTICIPANT" to "task_participants", "REMINDER" to "task_reminders"
@@ -37,12 +40,21 @@ internal const val OFFLINE_TRANSPORT = "OFFLINE_TRANSPORT"
 private const val CLEANUP_PENDING = "CLEANUP_PENDING"
 private const val CATEGORY_BUSY = "CATEGORY_BUSY"
 private const val RATE_LIMITED = "RATE_LIMITED"
+private const val DISPLAY_CONTEXT = "display_context"
 private val cleanupDelays = longArrayOf(2_000, 5_000, 10_000, 30_000)
 private val serviceDelays = longArrayOf(15_000, 30_000, 60_000)
 
 internal fun Row.string(key: String) = get(key) as String
 internal fun Row.long(key: String) = (get(key) as? Number)?.toLong() ?: 0L
 internal fun Row.optionalLong(key: String) = (get(key) as? Number)?.toLong()
+private fun Row.commandJson() = (get("payload_json") as? String)?.let(::JSONObject)
+
+internal fun Row.restoreDisplayContext(): RestoreDisplayContext? {
+    val context = commandJson()?.optJSONObject(DISPLAY_CONTEXT) ?: return null
+    val title = context.opt("task_title") as? String ?: return null
+    return RestoreDisplayContext(title, context.opt("category_label") as? String)
+}
+
 internal fun uuid(): String = UUID.randomUUID().toString()
 internal fun defaultCategoryId(uid: String): String {
     val bytes = MessageDigest.getInstance("SHA-256").digest("todolist/default-category/v1:$uid".toByteArray(Charsets.UTF_8))
@@ -53,6 +65,21 @@ internal fun defaultCategoryId(uid: String): String {
 }
 internal fun normalizedName(name: String) = Normalizer.normalize(name.trim(), Normalizer.Form.NFC)
 internal fun nameKey(name: String) = normalizedName(name).lowercase(Locale.ROOT)
+
+internal fun taskFields(
+    title: String, description: String, priority: Int, dueAt: Long?, repeat: String,
+    zone: ZoneId = ZoneId.systemDefault()
+): Row {
+    val trimmed = title.trim()
+    require(trimmed.length in 1..200 && description.length <= 10000 && priority in 1..3) {
+        "Tên, mô tả hoặc mức ưu tiên không hợp lệ."
+    }
+    require(repeat in setOf("NONE", "DAILY", "WEEKLY", "MONTHLY"))
+    require(repeat == "NONE" || dueAt != null) { "Công việc lặp lại cần ngày đến hạn." }
+    val anchor = dueAt?.takeIf { repeat == "MONTHLY" }?.let { Instant.ofEpochMilli(it).atZone(zone).dayOfMonth }
+    return mapOf("title" to trimmed, "description" to description.trim(), "priority" to priority,
+        "due_at" to dueAt, "repeat_type" to repeat, "timezone" to zone.id, "repeat_anchor_day" to anchor)
+}
 
 internal fun SupportSQLiteDatabase.rows(sql: String, vararg args: Any?): List<Row> =
     query(sql, args).use { cursor ->
@@ -137,6 +164,11 @@ internal class AccountWorkspace(val uid: String, val database: AppDatabase) : Au
         check(role(cid) in roles) { "Bạn không có quyền thực hiện thao tác này." }
     }
 
+    fun requireActive(cid: String) {
+        requireRole(cid, "OWNER", "EDITOR")
+        check(checkNotNull(category(cid))["deleted_at"] == null) { "Danh mục nằm trong thùng rác." }
+    }
+
     fun createCategory(label: String, id: String = uuid(), color: String? = null, icon: String? = null): String {
         val name = normalizedName(label)
         require(name.length in 1..100) { "Tên danh mục cần từ 1 đến 100 ký tự." }
@@ -217,7 +249,10 @@ internal class AccountWorkspace(val uid: String, val database: AppDatabase) : Au
     fun nextCommandAt(at: Long = now): Long? =
         commandHeads().minOfOrNull { maxOf(at, it.long("next_retry_at")) }
 
-    fun enqueue(cid: String, type: String, id: String, kind: String, base: Long, payload: Row = emptyMap()) {
+    fun enqueue(
+        cid: String, type: String, id: String, kind: String, base: Long, payload: Row = emptyMap(),
+        displayContext: RestoreDisplayContext? = null
+    ) {
         val membership = sql.rows("SELECT revision FROM category_members WHERE category_id=? AND user_uid=?", cid, uid)
             .firstOrNull()?.long("revision") ?: 0
         val action = when (kind) {
@@ -237,6 +272,10 @@ internal class AccountWorkspace(val uid: String, val database: AppDatabase) : Au
             }
         }
         val body = JSONObject(payload.mapValues { it.value ?: JSONObject.NULL }).put("command_type", kind)
+        if (displayContext != null) {
+            body.put(DISPLAY_CONTEXT, JSONObject().put("task_title", displayContext.taskTitle)
+                .put("category_label", displayContext.categoryLabel))
+        }
         database.tasks().enqueueSyncOperation(SyncQueueEntity(
             operationId = uuid(), actorUid = uid, categoryId = cid, entityType = type, entityId = id,
             action = action, payloadJson = if (action == "DELETE") null else body.toString(),
@@ -246,7 +285,7 @@ internal class AccountWorkspace(val uid: String, val database: AppDatabase) : Au
     }
 
     fun envelope(command: Row): Row {
-        val json = command["payload_json"]?.let { JSONObject(it as String) }
+        val json = command.commandJson()
         val kind = json?.optString("command_type") ?: when (command["entity_type"]) {
             "PARTICIPANT" -> "WITHDRAW"
             "REMINDER" -> "REMOVE_REMINDER"
@@ -254,7 +293,8 @@ internal class AccountWorkspace(val uid: String, val database: AppDatabase) : Au
         }
         val route = command.string("entity_id").split('/')
         val payload = json?.run {
-            keys().asSequence().filter { it != "command_type" }.associateWith { key -> get(key).takeUnless { it == JSONObject.NULL } }
+            keys().asSequence().filter { it != "command_type" && it != DISPLAY_CONTEXT }
+                .associateWith { key -> get(key).takeUnless { it == JSONObject.NULL } }
         }
         return mapOf("operation_id" to command["operation_id"], "kind" to kind, "category_id" to command["category_id"],
             "entity_type" to command["entity_type"], "entity_id" to route.last(), "task_id" to route.first(),
@@ -462,5 +502,25 @@ internal class AccountWorkspace(val uid: String, val database: AppDatabase) : Au
             }
         }
         return result.sortedByDescending { it.deletedAt }
+    }
+
+    fun changeTrash(item: TrashTask, purge: Boolean, name: String?) {
+        val cid = item.categoryId
+        check(item.entityType != "CATEGORY" || cid != defaultCategoryId(uid))
+        if (purge || item.entityType == "CATEGORY") requireRole(cid, "OWNER") else requireActive(cid)
+        val table = if (item.entityType == "CATEGORY") "categories" else snapshotGroups.getValue(item.entityType)
+        val old = checkNotNull(sql.rows("SELECT * FROM $table WHERE id=?", item.id).firstOrNull())
+        check(old["deleted_at"] != null && old.long("revision") == item.revision)
+        if (!purge && item.parentId != null) check(database.tasks().find(item.parentId) != null)
+        val newName = if (!purge && item.entityType == "CATEGORY") normalizedName(name ?: old.string("name")) else null
+        if (newName != null) require(newName.length in 1..100)
+        val fields = newName?.let { mapOf("name" to it, "name_key" to nameKey(it)) }.orEmpty()
+        val displayContext = if (!purge && item.entityType in setOf("TASK", "SUBTASK")) {
+            RestoreDisplayContext(old.string("title"), conflictCategoryLabel(cid))
+        } else null
+        if (purge) sql.execSQL("DELETE FROM $table WHERE id=?", arrayOf(item.id))
+        else upsert(table, old + fields + mapOf("deleted_at" to null, "client_updated_at" to now))
+        enqueue(cid, item.entityType, item.parentId?.let { "$it/${item.id}" } ?: item.id,
+            if (purge) "PURGE" else "RESTORE", item.revision, newName?.let { mapOf("name" to it) }.orEmpty(), displayContext)
     }
 }

@@ -2,4 +2,23 @@
     <string name="workspace_dialog_close">Đóng</string>
     <string name="workspace_dialog_empty">Không có mục nào.</string>
     <string name="workspace_notice_close">Đóng thông báo</string>
+    <string name="sync_conflict_list_title">Vấn đề đồng bộ</string>
+    <string name="sync_conflict_category_change">Thay đổi danh mục</string>
+    <string name="sync_conflict_unknown_task">Công việc chưa rõ tên</string>
+    <string name="sync_conflict_unknown_category">Chưa rõ danh mục</string>
+    <string name="sync_conflict_compare_title">Xem thay đổi</string>
+    <string name="sync_conflict_restore_title">Không thể khôi phục công việc</string>
+    <string name="sync_conflict_restore_missing_server">Công việc này không còn trên máy chủ.</string>
+    <string name="sync_conflict_restore_missing">Không tìm thấy công việc để khôi phục.</string>
+    <string name="sync_conflict_restore_not_in_trash">Công việc hiện không nằm trong thùng rác.</string>
+    <string name="sync_conflict_current">Bản hiện tại</string>
+    <string name="sync_conflict_draft">Bản của bạn</string>
+    <string name="sync_conflict_different_field">%1$s, hai bản khác nhau</string>
+    <string name="sync_conflict_cell_description">%1$s. %2$s. %3$s</string>
+    <string name="sync_conflict_select_field">Áp dụng thay đổi cho %1$s</string>
+    <string name="sync_conflict_select_help">Chọn các trường bạn muốn áp dụng lại.</string>
+    <string name="sync_conflict_reapply">Áp dụng lại</string>
+    <string name="sync_conflict_reapply_saved">Đã lưu các thay đổi đã chọn để đồng bộ.</string>
+    <string name="sync_conflict_reapply_failed">Không thể áp dụng lại thay đổi.</string>
+    <string name="sync_conflict_current_updated">Bản hiện tại đã thay đổi. Hãy mở lại bản so sánh và chọn lại các trường.</string>
 </resources>

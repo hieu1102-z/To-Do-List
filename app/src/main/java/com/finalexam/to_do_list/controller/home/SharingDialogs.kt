@@ -12,6 +12,7 @@ import androidx.core.view.isVisible
 import com.finalexam.to_do_list.R
 import com.finalexam.to_do_list.controller.auth.RegisterActivity
 import com.finalexam.to_do_list.controller.home.WorkspaceDialogs.Action
+import com.finalexam.to_do_list.controller.home.WorkspaceDialogs.ConflictChoice
 import com.finalexam.to_do_list.controller.home.WorkspaceDialogs.Tone
 import com.finalexam.to_do_list.databinding.ViewCategoryMembersBinding
 import com.finalexam.to_do_list.databinding.ViewPendingCategoryInvitationBinding
@@ -23,12 +24,12 @@ import com.finalexam.to_do_list.model.repository.WorkspaceCategory
 import com.finalexam.to_do_list.model.repository.WorkspaceMember
 import com.finalexam.to_do_list.model.repository.WorkspaceMembers
 import com.finalexam.to_do_list.model.repository.WorkspacePendingInvitation
+import com.finalexam.to_do_list.model.repository.WorkspaceRequestError
 import com.finalexam.to_do_list.model.repository.WorkspaceSync
 import com.finalexam.to_do_list.model.repository.businessCode
 import com.finalexam.to_do_list.model.repository.long
 import com.finalexam.to_do_list.model.repository.string
 import com.finalexam.to_do_list.model.repository.uuid
-import org.json.JSONObject
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
@@ -355,32 +356,72 @@ internal class SharingDialogs(
     }
 
     fun conflicts(changed: () -> Unit) {
+        val session = AccountSession.current(activity) ?: return
         repository.conflicts { result ->
-            if (!active) return@conflicts
+            if (!active || AccountSession.current(activity) !== session) return@conflicts
             result.fold({ rows ->
-                choices("Vấn đề đồng bộ", rows.map { row ->
-                    val draft = row["payload_json"] as? String
-                    val server = row["current"] as? Map<*, *>
-                    val title = server?.get("title") ?: server?.get("name") ?: "Thay đổi trong danh mục"
-                    (title.toString() + " · " + reason(row.string("last_error"))) to {
-                        val details = server?.filterKeys { it in setOf("title", "name", "description", "priority", "due_at", "is_done") }
-                        dialogs.show(
-                            title = "Xem thay đổi",
-                            message = "Bản hiện tại\n" + (details?.let { JSONObject(it).toString(2) } ?: "Không còn dữ liệu") +
-                                "\n\nThay đổi của bạn\n" + (draft ?: "Xóa vĩnh viễn"),
-                            primary = if (row["default_category_pending"] == true) null else Action("Bỏ thay đổi", Tone.DESTRUCTIVE) {
-                                repository.discard(row.string("operation_id")) { if (it.isSuccess) changed() else error(it.exceptionOrNull()) }
-                            },
-                            extra = draft?.let {
-                                Action("Sao chép bản nháp", Tone.NEUTRAL) {
-                                    activity.getSystemService(android.content.ClipboardManager::class.java)
-                                        .setPrimaryClip(android.content.ClipData.newPlainText("Bản nháp", it))
-                                    dialogs.notice("Đã sao chép. Bạn có thể mở bản hiện tại và sửa lại.")
-                                }
-                            })
-                    }
+                dialogs.conflictChoices(rows.map { row ->
+                    val title = (row["target_label"] as? String)?.takeIf(String::isNotBlank)
+                        ?: activity.getString(if (row["entity_type"] == "CATEGORY") {
+                            R.string.sync_conflict_category_change
+                        } else R.string.sync_conflict_unknown_task)
+                    val category = (row["category_label"] as? String)?.takeIf(String::isNotBlank)
+                        ?: activity.getString(R.string.sync_conflict_unknown_category)
+                    val issue = restoreConflictReason(row)?.let(activity::getString) ?: reason(row.string("last_error"))
+                    ConflictChoice(title, category, issue) { showConflict(row, session, changed) }
                 })
             }, ::error)
+        }
+    }
+
+    private fun showConflict(row: Row, session: AccountSession, changed: () -> Unit) {
+        fun isCurrent() = active && AccountSession.current(activity) === session
+        if (!isCurrent()) return
+        val operationId = row.string("operation_id")
+        val comparison = buildSyncConflictComparison(row, ZoneId.systemDefault(), activity::getString)
+        val title = activity.getString(comparison.title)
+        val discard = Action("Bỏ thay đổi", Tone.DESTRUCTIVE) {
+            if (isCurrent()) {
+                repository.discard(operationId) { result ->
+                    if (isCurrent()) result.fold({ changed() }, ::error)
+                }
+            }
+        }.takeUnless { row["default_category_pending"] == true }
+        val revision = ((row["current"] as? Map<*, *>)?.get("revision") as? Number)?.toLong()
+        val reapplyFields = (row["reapply_fields"] as? Set<*>).orEmpty()
+        val selectable = comparison.fields.mapNotNull { field ->
+            field.key?.takeIf { field.changed && it in reapplyFields }
+        }.toSet()
+
+        if (revision == null || selectable.isEmpty() || discard == null) {
+            dialogs.show(title, comparison.summary, primary = discard,
+                content = syncConflictTable(activity, comparison.fields))
+            return
+        }
+
+        dialogs.selectConflictFields(
+            title = title,
+            content = { selected -> syncConflictTable(activity, comparison.fields, selectable, selected) },
+            discard = discard
+        ) { selected ->
+            if (!isCurrent()) return@selectConflictFields
+            repository.reapplyConflict(operationId, revision, selected) { result ->
+                if (!isCurrent()) return@reapplyConflict
+                result.fold({
+                    changed()
+                    dialogs.notice(activity.getString(R.string.sync_conflict_reapply_saved))
+                }, { failure ->
+                    when {
+                        failure is WorkspaceRequestError && failure.code == "REVISION_CONFLICT" -> {
+                            dialogs.notice(activity.getString(R.string.sync_conflict_current_updated), error = true)
+                            conflicts(changed)
+                        }
+                        failure is WorkspaceRequestError -> error(failure)
+                        else -> dialogs.notice(failure.message ?: activity.getString(R.string.sync_conflict_reapply_failed),
+                            error = true)
+                    }
+                })
+            }
         }
     }
 

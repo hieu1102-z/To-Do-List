@@ -17,17 +17,21 @@ import android.widget.FrameLayout
 import android.widget.LinearLayout
 import androidx.activity.ComponentActivity
 import androidx.core.content.ContextCompat
+import androidx.core.view.AccessibilityDelegateCompat
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.accessibility.AccessibilityNodeInfoCompat
 import androidx.core.view.isVisible
 import com.finalexam.to_do_list.R
 import com.finalexam.to_do_list.databinding.DialogWorkspaceBinding
+import com.finalexam.to_do_list.databinding.ViewSyncConflictCardBinding
 import com.finalexam.to_do_list.databinding.ViewWorkspaceNoticeBinding
 
 internal class WorkspaceDialogs(private val activity: ComponentActivity) {
     enum class Tone { NEUTRAL, PRIMARY, DESTRUCTIVE }
 
     data class Action(val label: String, val tone: Tone = Tone.PRIMARY, val run: () -> Unit)
+    data class ConflictChoice(val title: String, val category: String, val reason: String, val onSelect: () -> Unit)
 
     private val closeLabel get() = activity.getString(R.string.workspace_dialog_close)
     private val cancelLabel get() = activity.getString(R.string.task_delete_cancel)
@@ -40,12 +44,75 @@ internal class WorkspaceDialogs(private val activity: ComponentActivity) {
         primary: Action? = null,
         secondary: Action = Action(closeLabel, Tone.NEUTRAL) {},
         extra: Action? = null,
+        content: View? = null,
         onCancel: (() -> Unit)? = null
     ) = panel(title, message) { dialog, binding ->
         if (onCancel != null) dialog.setOnCancelListener { onCancel() }
+        binding.addContent(content)
         binding.secondary.bind(secondary, dialog)
         primary?.let { binding.primary.bind(it, dialog) }
         extra?.let { binding.extra.bind(it, dialog) }
+    }
+
+    fun conflictChoices(choices: List<ConflictChoice>) {
+        val message = activity.getString(R.string.workspace_dialog_empty).takeIf { choices.isEmpty() }
+        panel(activity.getString(R.string.sync_conflict_list_title), message) { dialog, binding ->
+            binding.secondary.bind(Action(closeLabel, Tone.NEUTRAL) {}, dialog)
+            choices.forEachIndexed { index, choice ->
+                val card = ViewSyncConflictCardBinding.inflate(activity.layoutInflater, binding.options, false)
+                card.issueTitle.text = choice.title
+                card.issueCategory.text = choice.category
+                card.issueReason.text = choice.reason
+                ViewCompat.setScreenReaderFocusable(card.root, true)
+                ViewCompat.setAccessibilityDelegate(card.root, object : AccessibilityDelegateCompat() {
+                    override fun onInitializeAccessibilityNodeInfo(host: View, info: AccessibilityNodeInfoCompat) {
+                        super.onInitializeAccessibilityNodeInfo(host, info)
+                        info.className = Button::class.java.name
+                    }
+                })
+                card.root.setOnClickListener {
+                    dialog.dismiss()
+                    choice.onSelect()
+                }
+                binding.options.addView(card.root, LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
+                ).apply { if (index > 0) topMargin = dp(8) })
+            }
+        }
+    }
+
+    fun selectConflictFields(
+        title: String,
+        content: ((Set<String>) -> Unit) -> View?,
+        discard: Action,
+        submit: (Set<String>) -> Unit
+    ) = panel(title, activity.getString(R.string.sync_conflict_select_help)) { dialog, binding ->
+        var selected: Set<String> = emptySet()
+        binding.secondary.bind(Action(closeLabel, Tone.NEUTRAL) {}, dialog)
+        binding.primary.style(activity.getString(R.string.sync_conflict_reapply), Tone.PRIMARY)
+        binding.primary.isEnabled = false
+        binding.primary.alpha = 0.6f
+        binding.addContent(content { fields ->
+            selected = fields
+            binding.primary.isEnabled = fields.isNotEmpty()
+            binding.primary.alpha = if (binding.primary.isEnabled) 1f else 0.6f
+        })
+        binding.primary.setOnClickListener {
+            if (selected.isEmpty()) return@setOnClickListener
+            dialog.dismiss()
+            submit(selected)
+        }
+        binding.root.addView(Button(activity).apply { bind(discard, dialog) }, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
+        ).apply { topMargin = dp(8) })
+    }
+
+    private fun DialogWorkspaceBinding.addContent(content: View?) {
+        if (content == null) return
+        options.addView(content, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+            if (message.isVisible) topMargin = dp(12)
+        })
     }
 
     fun confirm(title: String, message: String, action: Action, cancel: String = cancelLabel) =

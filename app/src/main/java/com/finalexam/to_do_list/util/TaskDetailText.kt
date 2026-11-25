@@ -7,9 +7,13 @@ import java.time.format.DateTimeFormatter
 
 /** Presentation only; uses stored reminder data rather than the Figma sample values. */
 object TaskDetailText {
-    fun due(task: HomeTask, zone: ZoneId = ZoneId.systemDefault()): String = task.dueAt?.let {
-        Instant.ofEpochMilli(it).atZone(zone).format(DateTimeFormatter.ofPattern("dd/MM/yyyy, HH:mm"))
-    } ?: "Không có hạn"
+    private val timestampFormat = DateTimeFormatter.ofPattern("dd/MM/yyyy, HH:mm")
+
+    fun due(task: HomeTask, zone: ZoneId = ZoneId.systemDefault()): String = due(task.dueAt, zone)
+
+    internal fun due(at: Long?, zone: ZoneId): String = at?.let { time(it, zone) } ?: "Không có hạn"
+
+    internal fun time(at: Long, zone: ZoneId): String = Instant.ofEpochMilli(at).atZone(zone).format(timestampFormat)
 
     fun reminder(task: HomeTask, zone: ZoneId = ZoneId.systemDefault()): String {
         val at = task.remindAt ?: return "Không nhắc"
@@ -19,7 +23,7 @@ object TaskDetailText {
             offset != null && offset > 0 && offset % 86_400_000L == 0L -> "Trước ${offset / 86_400_000L} ngày"
             offset != null && offset > 0 && offset % 3_600_000L == 0L -> "Trước ${offset / 3_600_000L} giờ"
             offset != null && offset > 0 && offset % 60_000L == 0L -> "Trước ${offset / 60_000L} phút"
-            else -> Instant.ofEpochMilli(at).atZone(zone).format(DateTimeFormatter.ofPattern("dd/MM/yyyy, HH:mm"))
+            else -> time(at, zone)
         }
         return if (task.reminderEnabled == false) "$text (đã tắt)" else text
     }

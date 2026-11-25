@@ -7,8 +7,6 @@ import com.finalexam.to_do_list.model.local.entity.SubtaskEntity
 import com.finalexam.to_do_list.model.local.relation.HomeTask
 import com.finalexam.to_do_list.model.local.relation.TrashTask
 import com.finalexam.to_do_list.notification.AccountReminders
-import java.time.Instant
-import java.time.ZoneId
 import java.util.concurrent.Executors
 
 internal data class HomeContent(val tasks: List<HomeTask>, val categories: List<WorkspaceCategory>)
@@ -109,21 +107,6 @@ class UnifiedTaskRepository private constructor(private val context: Context) {
                 editReminder(task.categoryId, task.id, dueAt?.let { due -> offset?.let { due - it } })
             }
         }
-    }
-
-    private fun taskFields(title: String, description: String, priority: Int, dueAt: Long?, repeat: String): Row {
-        val trimmed = title.trim()
-        require(trimmed.length in 1..200 && description.length <= 10000 && priority in 1..3)
-        require(repeat in setOf("NONE", "DAILY", "WEEKLY", "MONTHLY") && (repeat == "NONE" || dueAt != null))
-        val zone = ZoneId.systemDefault()
-        return mapOf("title" to trimmed, "description" to description.trim(), "priority" to priority,
-            "due_at" to dueAt, "repeat_type" to repeat, "timezone" to zone.id,
-            "repeat_anchor_day" to dueAt?.takeIf { repeat == "MONTHLY" }?.let { Instant.ofEpochMilli(it).atZone(zone).dayOfMonth })
-    }
-
-    private fun AccountWorkspace.requireActive(cid: String) {
-        requireRole(cid, "OWNER", "EDITOR")
-        check(checkNotNull(category(cid))["deleted_at"] == null) { "Danh mục nằm trong thùng rác." }
     }
 
     private fun AccountWorkspace.editable(task: HomeTask, requireUnchanged: Boolean): Row {
@@ -236,23 +219,6 @@ class UnifiedTaskRepository private constructor(private val context: Context) {
         account(item.workspaceUid, true, callback) { changeTrash(item, purge, name) }
     }
 
-    private fun AccountWorkspace.changeTrash(item: TrashTask, purge: Boolean, name: String?) {
-        val cid = item.categoryId
-        check(item.entityType != "CATEGORY" || cid != defaultCategoryId(uid))
-        if (purge || item.entityType == "CATEGORY") requireRole(cid, "OWNER") else requireActive(cid)
-        val table = if (item.entityType == "CATEGORY") "categories" else snapshotGroups.getValue(item.entityType)
-        val old = checkNotNull(sql.rows("SELECT * FROM $table WHERE id=?", item.id).firstOrNull())
-        check(old["deleted_at"] != null && old.long("revision") == item.revision)
-        if (!purge && item.parentId != null) check(database.tasks().find(item.parentId) != null)
-        val newName = if (!purge && item.entityType == "CATEGORY") normalizedName(name ?: old.string("name")) else null
-        if (newName != null) require(newName.length in 1..100)
-        val fields = newName?.let { mapOf("name" to it, "name_key" to nameKey(it)) }.orEmpty()
-        if (purge) sql.execSQL("DELETE FROM $table WHERE id=?", arrayOf(item.id))
-        else upsert(table, old + fields + mapOf("deleted_at" to null, "client_updated_at" to now))
-        enqueue(cid, item.entityType, item.parentId?.let { "$it/" + item.id } ?: item.id,
-            if (purge) "PURGE" else "RESTORE", item.revision, newName?.let { mapOf("name" to it) }.orEmpty())
-    }
-
     fun permanentlyDeleteAll(callback: (Result<Unit>) -> Unit) = account(currentUid, true, callback) {
         trash().filter { it.role == "OWNER" }.forEach { changeTrash(it, true, null) }
     }
@@ -327,20 +293,11 @@ class UnifiedTaskRepository private constructor(private val context: Context) {
         }
     }
 
-    internal fun conflicts(callback: (Result<List<Row>>) -> Unit) {
-        val uid = currentUid ?: return callback(Result.success(emptyList()))
-        account(uid, callback = callback) {
-            commands().filter { it["status"] == "REJECTED" }.map { command ->
-                val id = command.string("entity_id").substringAfterLast('/')
-                val kind = command.string("entity_type")
-                val table = if (kind == "CATEGORY") "categories" else snapshotGroups[kind]
-                val live = if (kind in setOf("CATEGORY", "TASK", "SUBTASK")) {
-                    sql.rows("SELECT * FROM $table WHERE id=?", id).firstOrNull()
-                } else null
-                command + mapOf("current" to live, "default_category_pending" to (envelope(command)["kind"] == "ENSURE_DEFAULT_CATEGORY"))
-            }
-        }
-    }
+    internal fun conflicts(callback: (Result<List<Row>>) -> Unit) =
+        account(currentUid, callback = callback) { syncConflictRows() }
+
+    internal fun reapplyConflict(operationId: String, expectedRevision: Long, fields: Set<String>, callback: (Result<Unit>) -> Unit) =
+        account(currentUid, true, callback) { reapplyRejectedChange(operationId, expectedRevision, fields) }
 
     internal fun discard(operationId: String, callback: (Result<Unit>) -> Unit) {
         val uid = currentUid ?: return
