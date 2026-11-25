@@ -18,8 +18,18 @@ class TaskFilterTest {
     private val now get() = due(0)
     private fun matches(filter: TaskFilter, done: Boolean = false, at: Long?) = filter.includes(done, at, today, zone, now)
 
-    @Test fun completedTasksOnlyAppearInDone() {
-        TaskFilter.entries.filter { it != TaskFilter.DONE }.forEach { assertFalse(matches(it, true, due(0))) }
+    @Test fun allIncludesOnlyUnfinishedTasksThatAreNotOverdue() {
+        for (dueAt in listOf(now, due(0, 13), due(10), null)) {
+            assertTrue(matches(TaskFilter.ALL, at = dueAt))
+            assertFalse(matches(TaskFilter.ALL, done = true, at = dueAt))
+        }
+        assertFalse(matches(TaskFilter.ALL, at = now - 1))
+        assertFalse(matches(TaskFilter.ALL, at = due(-1)))
+    }
+
+    @Test fun completedTasksAppearOnlyInDone() {
+        val dateFilters = listOf(TaskFilter.TODAY, TaskFilter.WEEK, TaskFilter.OVERDUE)
+        dateFilters.forEach { assertFalse(matches(it, true, due(0, 8))) }
         assertTrue(matches(TaskFilter.DONE, true, null))
         assertFalse(matches(TaskFilter.DONE, false, due(0)))
     }
@@ -47,14 +57,14 @@ class TaskFilterTest {
 
     @Test fun allCategoriesIncludesTasksFromTheHiddenDefault() {
         val workspace = WorkspaceRef("account")
-        val defaultTask = HomeTask("draft", "Draft", "", defaultCategoryId("account"), "", due(0),
+        val defaultTask = HomeTask("draft", "Draft", "", defaultCategoryId("account"), "", null,
             2, false, null, 0, 0, workspaceUid = workspace.uid)
         val namedTask = defaultTask.copy(id = "study-task", categoryId = "study", category = "Học tập")
         val tasks = listOf(defaultTask, namedTask)
 
-        assertEquals(tasks, tasks.filter { TaskFilter.TODAY.includesHomeTask(it, null, null, today, zone) })
+        assertEquals(tasks, tasks.filter { TaskFilter.ALL.includesHomeTask(it, null, null, today, zone) })
         val study = CategoryRef(workspace, "study")
-        assertEquals(listOf(namedTask), tasks.filter { TaskFilter.TODAY.includesHomeTask(it, study, null, today, zone) })
+        assertEquals(listOf(namedTask), tasks.filter { TaskFilter.ALL.includesHomeTask(it, study, null, today, zone) })
     }
 
     @Test fun selectedCategoryStillAppliesTheActiveDateAndStatusFilters() {

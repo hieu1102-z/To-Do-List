@@ -32,6 +32,7 @@
     <string name="verification_wait">Gửi lại sau %1$d giây</string>
     <string name="go_home">Về trang chủ</string>
     <string name="home_category_all">Tất cả</string>
+    <string name="home_all_tasks">Tất cả công việc</string>
     <string name="home_category_picker">Chọn danh mục. Đang hiển thị %1$s.</string>
     <string name="home_task_count">· %1$d công việc</string>
 </resources>

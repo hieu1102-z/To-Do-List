@@ -61,7 +61,7 @@ open class HomeActivity : WorkspaceActivity() {
     private lateinit var repository: UnifiedTaskRepository
     private lateinit var auth: AuthRepository
     private var tasks = emptyList<HomeTask>()
-    private var filter = TaskFilter.TODAY
+    private var filter = TaskFilter.ALL
     private var category: CategoryRef? = null
     private var categoryLabel: String? = null
     private var categoryWritable = true
@@ -160,7 +160,8 @@ open class HomeActivity : WorkspaceActivity() {
         NotificationHelper.createChannel(this)
         requestNotificationPermission()
 
-        filter = TaskFilter.entries.getOrElse(savedInstanceState?.getInt("filter") ?: 0) { TaskFilter.TODAY }
+        val savedFilter = savedInstanceState?.getString("taskFilter")
+        filter = TaskFilter.entries.firstOrNull { it.name == savedFilter } ?: TaskFilter.ALL
         category = savedInstanceState?.getString("category")?.let {
             CategoryRef(WorkspaceRef(savedInstanceState.getString("categoryUid")), it)
         }
@@ -224,7 +225,7 @@ open class HomeActivity : WorkspaceActivity() {
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
-        outState.putInt("filter", filter.ordinal)
+        outState.putString("taskFilter", filter.name)
         outState.putString("category", category?.id)
         outState.putString("categoryUid", category?.workspace?.uid)
         outState.putString("categoryLabel", categoryLabel)
@@ -333,6 +334,7 @@ open class HomeActivity : WorkspaceActivity() {
                 (query.isEmpty() || task.title.contains(query, true) || task.description.contains(query, true))
         }
         binding.sectionTitle.text = selectedDate?.format(DateTimeFormatter.ofPattern("dd/MM/yyyy")) ?: when (filter) {
+            TaskFilter.ALL -> getString(R.string.home_all_tasks)
             TaskFilter.TODAY -> "Công việc hôm nay"
             TaskFilter.WEEK -> "Công việc 7 ngày tới"
             TaskFilter.OVERDUE -> "Công việc quá hạn"
@@ -774,11 +776,15 @@ open class HomeActivity : WorkspaceActivity() {
         content.addView(grid)
         content.addView(label("Xem nhanh", 18f, ink, true).apply { setPadding(0, dp(20), 0, dp(16)) })
         val quick = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; background = rounded(white, 18); setPadding(dp(16), dp(6), dp(16), dp(6)) }
-        listOf("☼" to "Hôm nay", "▦" to "7 ngày tới", "◷" to "Quá hạn", "✓" to "Đã hoàn thành").forEachIndexed { i, (symbol, title) ->
-            val f = TaskFilter.entries[i]
+        listOf(
+            Triple(TaskFilter.TODAY, "☼", "Hôm nay"),
+            Triple(TaskFilter.WEEK, "▦", "7 ngày tới"),
+            Triple(TaskFilter.OVERDUE, "◷", "Quá hạn"),
+            Triple(TaskFilter.DONE, "✓", "Đã hoàn thành")
+        ).forEach { (f, symbol, title) ->
             val count = tasks.count { f.includes(it.done, it.dueAt, LocalDate.now(zone), zone) }
             val row = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL; setPadding(0, dp(11), 0, dp(11)); isClickable = true; setOnClickListener { filter = f; showHomeScreen() } }
-            row.addView(label(symbol, 20f, if (i == 2) Color.rgb(205, 72, 85) else brand), LinearLayout.LayoutParams(dp(34), -2))
+            row.addView(label(symbol, 20f, if (f == TaskFilter.OVERDUE) Color.rgb(205, 72, 85) else brand), LinearLayout.LayoutParams(dp(34), -2))
             row.addView(label(title, 14f, ink), LinearLayout.LayoutParams(0, -2, 1f))
             row.addView(label("$count   ›", 14f, muted, true))
             quick.addView(row)
