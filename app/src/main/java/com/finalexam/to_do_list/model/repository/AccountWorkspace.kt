@@ -33,6 +33,13 @@ internal val snapshotGroups = linkedMapOf(
     "MEMBER" to "category_members", "TASK" to "tasks", "SUBTASK" to "subtasks",
     "PARTICIPANT" to "task_participants", "REMINDER" to "task_reminders"
 )
+internal const val OFFLINE_TRANSPORT = "OFFLINE_TRANSPORT"
+private const val CLEANUP_PENDING = "CLEANUP_PENDING"
+private const val CATEGORY_BUSY = "CATEGORY_BUSY"
+private const val RATE_LIMITED = "RATE_LIMITED"
+private val cleanupDelays = longArrayOf(2_000, 5_000, 10_000, 30_000)
+private val serviceDelays = longArrayOf(15_000, 30_000, 60_000)
+
 internal fun Row.string(key: String) = get(key) as String
 internal fun Row.long(key: String) = (get(key) as? Number)?.toLong() ?: 0L
 internal fun Row.optionalLong(key: String) = (get(key) as? Number)?.toLong()
@@ -190,6 +197,26 @@ internal class AccountWorkspace(val uid: String, val database: AppDatabase) : Au
 
     fun commands(): List<Row> = sql.rows("SELECT * FROM sync_queue WHERE actor_uid=? ORDER BY rowid", uid)
 
+    private fun commandHeads(): List<Row> = sql.rows("""
+        SELECT * FROM sync_queue WHERE rowid IN (
+            SELECT MIN(candidate.rowid) FROM sync_queue candidate
+            WHERE candidate.actor_uid=? AND candidate.status IN ('PENDING', 'SENDING', 'FAILED')
+            AND (candidate.category_id<>? OR NOT EXISTS (
+                SELECT 1 FROM sync_queue blocked
+                WHERE blocked.actor_uid=candidate.actor_uid AND blocked.category_id=candidate.category_id
+                AND blocked.status='REJECTED' AND blocked.entity_type='CATEGORY' AND blocked.action='CREATE'
+            ))
+            GROUP BY candidate.category_id
+        ) ORDER BY rowid
+    """.trimIndent(), uid, defaultCategoryId(uid))
+
+    fun nextRunnableCommand(excluded: Set<String>, at: Long): Row? = commandHeads().firstOrNull {
+        it.string("category_id") !in excluded && it.long("next_retry_at") <= at
+    }
+
+    fun nextCommandAt(at: Long = now): Long? =
+        commandHeads().minOfOrNull { maxOf(at, it.long("next_retry_at")) }
+
     fun enqueue(cid: String, type: String, id: String, kind: String, base: Long, payload: Row = emptyMap()) {
         val membership = sql.rows("SELECT revision FROM category_members WHERE category_id=? AND user_uid=?", cid, uid)
             .firstOrNull()?.long("revision") ?: 0
@@ -240,35 +267,58 @@ internal class AccountWorkspace(val uid: String, val database: AppDatabase) : Au
         sql.execSQL("UPDATE sync_queue SET status='SENDING', dispatched=1 WHERE operation_id=?", arrayOf(id))
     }
 
-    fun acknowledge(command: Row, result: Row) = transaction {
+    fun pendingCleanup(command: Row, at: Long = now) {
+        val attempt = retryAttempt(command, CLEANUP_PENDING, cleanupDelays.lastIndex)
+        sql.execSQL("""UPDATE sync_queue SET status='SENDING', dispatched=1, last_error=?, retry_count=?,
+            next_retry_at=? WHERE actor_uid=? AND operation_id=?""",
+            arrayOf(CLEANUP_PENDING, attempt + 1, at + cleanupDelays[attempt], uid, command["operation_id"]))
+    }
+
+    fun wakeOfflineCommands() {
+        sql.execSQL("""UPDATE sync_queue SET next_retry_at=NULL WHERE actor_uid=?
+            AND status='FAILED' AND last_error=?""", arrayOf(uid, OFFLINE_TRANSPORT))
+    }
+
+    fun wakeCategoryCleanup(cid: String) {
+        sql.execSQL("""UPDATE sync_queue SET next_retry_at=NULL WHERE actor_uid=? AND category_id=?
+            AND status IN ('SENDING', 'FAILED') AND last_error IN (?, ?)""",
+            arrayOf(uid, cid, CLEANUP_PENDING, CATEGORY_BUSY))
+    }
+
+    fun acknowledge(command: Row, result: Row): Unit = transaction {
         val id = command.string("operation_id")
+        val cid = command.string("category_id")
         val revision = result.optionalLong("revision") ?: 0
-        sql.execSQL("UPDATE sync_queue SET base_revision=?, predecessor_id=NULL WHERE predecessor_id=?", arrayOf(revision, id))
+        sql.execSQL("UPDATE sync_queue SET base_revision=?, predecessor_id=NULL WHERE predecessor_id=?", arrayOf<Any?>(revision, id))
         val route = command.string("entity_id").split('/')
         if (result["revision"] != null) {
             when (val type = command.string("entity_type")) {
                 "CATEGORY", "TASK", "SUBTASK" -> {
                     val table = if (type == "CATEGORY") "categories" else snapshotGroups.getValue(type)
-                    sql.execSQL("UPDATE $table SET revision=MAX(revision,?) WHERE id=?", arrayOf(revision, route.last()))
+                    sql.execSQL("UPDATE $table SET revision=MAX(revision,?) WHERE id=?", arrayOf<Any?>(revision, route.last()))
                 }
                 "REMINDER", "PARTICIPANT" -> {
                     val table = snapshotGroups.getValue(type)
-                    sql.execSQL("UPDATE $table SET revision=MAX(revision,?) WHERE task_id=? AND user_uid=?", arrayOf(revision, route.first(), uid))
+                    sql.execSQL("UPDATE $table SET revision=MAX(revision,?) WHERE task_id=? AND user_uid=?", arrayOf<Any?>(revision, route.first(), uid))
                 }
             }
         }
         sql.execSQL("DELETE FROM sync_queue WHERE operation_id=?", arrayOf(id))
         if (command["entity_type"] == "CATEGORY" && command["action"] == "DELETE") {
-            sql.execSQL("DELETE FROM sync_state WHERE user_uid=? AND category_id=?", arrayOf(uid, command["category_id"]))
-
+            dropCategory(cid)
+        } else {
+            invalidateSnapshot(cid)
         }
     }
 
-    fun failed(command: Row, reason: String, retry: Boolean) = transaction {
-        val delay = (15000L shl command.long("retry_count").coerceAtMost(6).toInt())
-        sql.execSQL("""UPDATE sync_queue SET status=?,last_error=?,retry_count=retry_count+1,next_retry_at=?
-            WHERE operation_id=?""", arrayOf(if (retry) "FAILED" else "REJECTED", reason,
-            if (retry) now + delay else null, command["operation_id"]))
+    fun failed(command: Row, reason: String, retry: Boolean, retryAfterMs: Long? = null, at: Long = now) = transaction {
+        val delays = if (reason == CATEGORY_BUSY) cleanupDelays else serviceDelays
+        val attempt = retryAttempt(command, reason, delays.lastIndex)
+        val delay = maxOf(delays[attempt], retryAfterMs ?: 0).coerceAtMost(Long.MAX_VALUE - at)
+        sql.execSQL("""UPDATE sync_queue SET status=?,last_error=?,retry_count=?,next_retry_at=?
+            WHERE actor_uid=? AND operation_id=?""", arrayOf(if (retry) "FAILED" else "REJECTED", reason,
+            attempt + 1, if (retry) at + delay else null, uid, command["operation_id"]))
+        if (!retry) invalidateSnapshot(command.string("category_id"))
         if (envelope(command)["kind"] == "ENSURE_DEFAULT_CATEGORY") return@transaction
         if (!retry) {
             var previous = listOf(command.string("operation_id"))
@@ -306,11 +356,39 @@ internal class AccountWorkspace(val uid: String, val database: AppDatabase) : Au
         }
     }
 
-    fun dropCategory(cid: String) = transaction {
-        sql.execSQL("DELETE FROM categories WHERE id=?", arrayOf(cid))
-        sql.execSQL("DELETE FROM sync_state WHERE category_id=?", arrayOf(cid))
+    private fun retryAttempt(command: Row, reason: String, limit: Int): Int {
+        val previous = command["last_error"] as? String ?: return 0
+        fun separateDelay(code: String) =
+            code == CATEGORY_BUSY || code == CLEANUP_PENDING || code == OFFLINE_TRANSPORT || code == RATE_LIMITED
+        if (reason != previous && (separateDelay(reason) || separateDelay(previous))) return 0
+        return command.long("retry_count").coerceIn(0, limit.toLong()).toInt()
+    }
 
+    fun hasUnconfirmedCategoryPurge(cid: String): Boolean = sql.rows("""
+        SELECT 1 AS operation_pending FROM sync_queue WHERE actor_uid=? AND category_id=?
+        AND entity_type='CATEGORY' AND action='DELETE' AND dispatched=1 AND status IN ('PENDING', 'SENDING', 'FAILED')
+        LIMIT 1
+    """.trimIndent(), uid, cid).isNotEmpty()
+
+    fun dropCategory(cid: String) = transaction {
+        if (hasUnconfirmedCategoryPurge(cid)) return@transaction false
+        sql.execSQL("DELETE FROM categories WHERE id=?", arrayOf(cid))
+        invalidateSnapshot(cid)
         sql.execSQL("DELETE FROM sync_queue WHERE actor_uid=? AND category_id=?", arrayOf(uid, cid))
+        true
+    }
+
+    private fun snapshotCheckpoint(cid: String) = sql.rows(
+        "SELECT last_server_seq FROM sync_state WHERE user_uid=? AND category_id=?", uid, cid
+    ).firstOrNull()?.optionalLong("last_server_seq")
+
+    private fun invalidateSnapshot(cid: String) {
+        sql.execSQL("DELETE FROM sync_state WHERE user_uid=? AND category_id=?", arrayOf(uid, cid))
+    }
+
+    fun needsSnapshot(cid: String, seq: Long?, role: String? = null): Boolean {
+        val applied = snapshotCheckpoint(cid)
+        return applied == null || seq == null || seq > applied || role != null && this.role(cid) != role
     }
 
     private fun rowId(type: String, row: Row): String = when (type) {
@@ -322,19 +400,18 @@ internal class AccountWorkspace(val uid: String, val database: AppDatabase) : Au
 
     fun apply(snapshot: WorkspaceSnapshot) = transaction {
         val cid = snapshot.category.string("id")
-        val previous = sql.rows("SELECT last_server_seq FROM sync_state WHERE user_uid=? AND category_id=?", uid, cid)
-            .firstOrNull()?.long("last_server_seq") ?: -1
-        if (snapshot.seq < previous) return@transaction
+        val previous = maxOf(snapshotCheckpoint(cid) ?: -1L, category(cid)?.long("server_seq") ?: -1L)
+        if (snapshot.seq < previous || hasUnconfirmedCategoryPurge(cid)) return@transaction false
         if (snapshot.role == "VIEWER") {
             sql.execSQL("DELETE FROM sync_queue WHERE actor_uid=? AND category_id=? AND entity_type<>'REMINDER'", arrayOf(uid, cid))
         }
         val queue = commands().filter { it["category_id"] == cid && it["status"] != "REJECTED" }
-        if (queue.any { it["entity_type"] == "CATEGORY" && it["action"] == "DELETE" }) return@transaction
+        if (queue.any { it["entity_type"] == "CATEGORY" && it["action"] == "DELETE" }) return@transaction false
         snapshot.profiles.filter { it["uid"] != uid }.forEach {
             upsert("users", it + mapOf("email" to "", "email_key" to "", "email_verified" to 0))
         }
         if (category(cid) == null || queue.none { it["entity_type"] == "CATEGORY" }) {
-            upsert("categories", snapshot.category)
+            upsert("categories", snapshot.category + ("server_seq" to snapshot.seq))
         } else {
             upsert("categories", mapOf("id" to cid, "server_seq" to snapshot.seq))
         }
@@ -362,6 +439,7 @@ internal class AccountWorkspace(val uid: String, val database: AppDatabase) : Au
             }
         }
         upsert("sync_state", mapOf("user_uid" to uid, "category_id" to cid, "last_server_seq" to snapshot.seq))
+        true
     }
 
     fun trash(): List<TrashTask> {

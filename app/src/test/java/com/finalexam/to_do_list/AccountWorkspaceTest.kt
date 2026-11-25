@@ -7,6 +7,7 @@ import com.finalexam.to_do_list.model.local.AppDatabase
 import com.finalexam.to_do_list.model.local.SchemaSql
 import com.finalexam.to_do_list.model.local.entity.UserEntity
 import com.finalexam.to_do_list.model.repository.AccountWorkspace
+import com.finalexam.to_do_list.model.repository.OFFLINE_TRANSPORT
 import com.finalexam.to_do_list.model.repository.WorkspaceSnapshot
 import com.finalexam.to_do_list.model.repository.defaultCategoryId
 import com.finalexam.to_do_list.model.repository.long
@@ -168,6 +169,146 @@ class AccountWorkspaceTest {
                 assertEquals(0L, store.commands()[1]["base_revision"])
                 store.acknowledge(store.commands().first(), mapOf("revision" to 2))
                 assertEquals(2L, store.commands().single()["base_revision"])
+            }
+        } finally { context.deleteDatabase(AppDatabase.accountFileName(uid)) }
+    }
+
+    @Test fun cleanupPollingSurvivesReopen() {
+        val uid = uuid()
+        val firstCategory = uuid()
+        val otherCategory = uuid()
+        val start = 10_000L
+        try {
+            val original = open(uid).use { store ->
+                store.database.users().upsert(UserEntity(uid, "a@example.test", "a@example.test", "A"))
+                store.enqueue(firstCategory, "TASK", uuid(), "PURGE", 2)
+                store.enqueue(firstCategory, "TASK", uuid(), "TRASH", 1)
+                store.enqueue(otherCategory, "TASK", uuid(), "TRASH", 1)
+                val command = checkNotNull(store.nextRunnableCommand(emptySet(), start))
+                val envelope = store.envelope(command)
+                store.pendingCleanup(command, start)
+
+                val parallel = checkNotNull(store.nextRunnableCommand(emptySet(), start))
+                assertEquals(otherCategory, parallel["category_id"])
+                assertEquals(start, store.nextCommandAt(start))
+                store.acknowledge(parallel, mapOf("revision" to 2))
+                envelope
+            }
+            open(uid).use { store ->
+                var now = start
+                for (delay in listOf(2_000L, 5_000L, 10_000L, 30_000L, 30_000L)) {
+                    assertEquals(now + delay, store.nextCommandAt(now))
+                    assertNull(store.nextRunnableCommand(emptySet(), now + delay - 1))
+                    now += delay
+                    val next = checkNotNull(store.nextRunnableCommand(emptySet(), now))
+                    assertEquals(original, store.envelope(next))
+                    store.pendingCleanup(next, now)
+                }
+                store.wakeCategoryCleanup(otherCategory)
+                assertNull(store.nextRunnableCommand(emptySet(), now))
+                store.wakeCategoryCleanup(firstCategory)
+                assertNull(store.nextRunnableCommand(setOf(firstCategory), now))
+                val returned = checkNotNull(store.nextRunnableCommand(emptySet(), now))
+                assertEquals(original, store.envelope(returned))
+                store.acknowledge(returned, mapOf("ok" to true, "seq" to 4))
+                assertEquals("TRASH", store.envelope(store.commands().single())["kind"])
+                assertEquals(now, store.nextCommandAt(now))
+            }
+        } finally { context.deleteDatabase(AppDatabase.accountFileName(uid)) }
+    }
+
+    @Test fun reconnectWakesOnlyOfflineCommands() {
+        val uid = uuid()
+        val offlineCategory = uuid()
+        val rateLimitedCategory = uuid()
+        val busyCategory = uuid()
+        val start = 10_000L
+        try {
+            open(uid).use { store ->
+                store.database.users().upsert(UserEntity(uid, "a@example.test", "a@example.test", "A"))
+                for (cid in listOf(offlineCategory, rateLimitedCategory, busyCategory)) {
+                    store.enqueue(cid, "TASK", uuid(), "TRASH", 1)
+                }
+                val (offline, rateLimited, busy) = store.commands()
+                store.failed(offline, OFFLINE_TRANSPORT, retry = true, at = start)
+                store.failed(rateLimited, "RATE_LIMITED", retry = true, retryAfterMs = 90_000, at = start)
+                store.failed(busy, "CATEGORY_BUSY", retry = true, at = start)
+                assertEquals(start + 2_000, store.nextCommandAt(start))
+
+                store.wakeOfflineCommands()
+                assertEquals(offline["operation_id"], store.nextRunnableCommand(emptySet(), start)?.get("operation_id"))
+                store.acknowledge(offline, mapOf("revision" to 2))
+                store.wakeCategoryCleanup(busyCategory)
+                assertEquals(busy["operation_id"], store.nextRunnableCommand(emptySet(), start)?.get("operation_id"))
+                store.acknowledge(busy, mapOf("revision" to 2))
+                store.wakeCategoryCleanup(rateLimitedCategory)
+                assertEquals(start + 90_000, store.nextCommandAt(start))
+
+                store.acknowledge(rateLimited, mapOf("revision" to 2))
+                store.enqueue(offlineCategory, "TASK", uuid(), "TRASH", 1)
+                for (expectedDelay in listOf(15_000L, 30_000L, 60_000L, 60_000L)) {
+                    store.failed(store.commands().single(), "UNAVAILABLE", retry = true, at = start)
+                    store.wakeOfflineCommands()
+                    assertEquals(start + expectedDelay, store.nextCommandAt(start))
+                }
+            }
+        } finally { context.deleteDatabase(AppDatabase.accountFileName(uid)) }
+    }
+
+    @Test fun categoryPurgeIsRetainedUntilReceipt() {
+        val uid = uuid()
+        try {
+            open(uid).use { store ->
+                store.database.users().upsert(UserEntity(uid, "a@example.test", "a@example.test", "A"))
+                val cid = store.createCategory("Shared")
+                store.acknowledge(store.commands().single(), mapOf("revision" to 1))
+                store.sql.execSQL("DELETE FROM categories WHERE id=?", arrayOf(cid))
+                store.enqueue(cid, "CATEGORY", cid, "PURGE", 2)
+                val purge = store.commands().single()
+                store.sending(purge.string("operation_id"))
+                store.enqueue(cid, "TASK", uuid(), "TRASH", 1)
+
+                assertTrue(store.hasUnconfirmedCategoryPurge(cid))
+                assertFalse(store.dropCategory(cid))
+                assertEquals(2, store.commands().size)
+                store.acknowledge(purge, mapOf("ok" to true, "seq" to 5))
+                assertFalse(store.hasUnconfirmedCategoryPurge(cid))
+                assertTrue(store.commands().isEmpty())
+            }
+        } finally { context.deleteDatabase(AppDatabase.accountFileName(uid)) }
+    }
+
+    @Test fun sameSequenceRepairsRoom() {
+        val uid = uuid()
+        try {
+            open(uid).use { store ->
+                store.database.users().upsert(UserEntity(uid, "a@example.test", "a@example.test", "A"))
+                val cid = store.createCategory("Authoritative")
+                store.acknowledge(store.commands().single(), mapOf("revision" to 1))
+                val category = checkNotNull(store.category(cid))
+                val member = mapOf("category_id" to cid, "user_uid" to uid, "role" to "OWNER", "joined_at" to 1)
+                val snapshot = WorkspaceSnapshot(category, "OWNER", 5, mapOf("MEMBER" to listOf(member)), emptyList())
+                assertTrue(store.apply(snapshot))
+                assertFalse(store.needsSnapshot(cid, 5, "OWNER"))
+                assertTrue(store.needsSnapshot(cid, 5, "EDITOR"))
+                assertTrue(store.needsSnapshot(cid, null))
+                assertTrue(store.needsSnapshot(cid, 6))
+
+                store.updateCategory(store.categories().single(), "First draft", null, null)
+                assertTrue(store.apply(snapshot))
+                assertEquals("First draft", store.categories().single().name)
+                store.failed(store.commands().single(), "REVISION_CONFLICT", retry = false)
+                assertTrue(store.needsSnapshot(cid, 5, "OWNER"))
+                assertFalse(store.apply(snapshot.copy(seq = 4, category = category + ("name" to "Stale"))))
+                assertTrue(store.apply(snapshot))
+                assertEquals("Authoritative", store.categories().single().name)
+
+                store.updateCategory(store.categories().single(), "Second draft", null, null)
+                store.acknowledge(store.commands().last(), mapOf("revision" to 2, "seq" to 5))
+                assertTrue(store.needsSnapshot(cid, 5, "OWNER"))
+                assertTrue(store.apply(snapshot.copy(category = category + mapOf("revision" to 2, "name" to "Saved"))))
+                assertEquals("Saved", store.categories().single().name)
+                assertFalse(store.needsSnapshot(cid, 5, "OWNER"))
             }
         } finally { context.deleteDatabase(AppDatabase.accountFileName(uid)) }
     }

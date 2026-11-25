@@ -28,6 +28,10 @@ Chạy kiểm thử Android bằng Gradle.
 
 Các lệnh Android chỉ chạy kiểm thử code và dữ liệu. Fixture DBML của kiểm thử Room nằm trong `app/src/test/fixtures`, nên không cần checkout BE hoặc thư mục tài liệu chung để build và kiểm thử.
 
+### Đo độ trễ đồng bộ
+
+Khi app mở, mạng đã xác thực kích hoạt gửi lệnh chờ. WorkManager tiếp tục xử lý khi app ở nền. Khi kiểm tra bằng hai thiết bị, dùng `adb logcat -v epoch -s TodoListSync` để xem mốc mạng đã xác thực, gửi HTTP, nhận tín hiệu Firestore và áp dụng Room. Đối chiếu `operation_id` với log Render, và dùng `category_hash` cùng `server_seq` để tìm lượt Room cập nhật tương ứng trên máy nhận. Đo riêng lần API gọi sau khi Render nhàn rỗi và các lần gọi khi dịch vụ đã thức. So thời gian cục bộ trong cùng một thiết bị, hoặc dùng đồng hồ đã đồng bộ để đo giữa hai thiết bị.
+
 ## Cửa sổ sửa công việc
 
 `EditTaskDialog` tái sử dụng cùng XML của form thêm công việc: ô tiêu đề/mô tả, ngày hạn và nhắc nhở cạnh nhau, chip ưu tiên, dropdown danh mục/lặp lại, nút Lưu thay đổi. Giữ dạng cửa sổ nổi và cuộn nội dung. Điền dữ liệu hiện có, giữ UUID và trạng thái hoàn thành. Thay đổi nhắc nhở/lịch lặp được lưu qua repository; nếu không đổi nhắc nhở thì giữ nguyên khoảng nhắc đã lưu.

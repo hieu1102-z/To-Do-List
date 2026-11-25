@@ -5,6 +5,7 @@ import com.finalexam.to_do_list.model.repository.WorkspaceHttp
 import com.finalexam.to_do_list.model.repository.WorkspaceRequestError
 import com.finalexam.to_do_list.model.repository.businessCode
 import com.finalexam.to_do_list.model.repository.isTransientWorkspaceFailure
+import com.finalexam.to_do_list.model.repository.retryAfterMillis
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Protocol
@@ -18,6 +19,10 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
+import org.robolectric.shadows.ShadowLog
+import java.io.IOException
+import java.net.SocketTimeoutException
+import java.time.Instant
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [28], application = Application::class, manifest = Config.NONE)
@@ -85,6 +90,65 @@ class WorkspaceHttpTest {
         }.businessCode())
         assertThrows(IllegalArgumentException::class.java) {
             WorkspaceHttp("http://workspace.example.test", "account", { _, _ -> "" })
+        }
+    }
+
+    @Test fun retryAfterFromServiceSurvivesErrorDecoding() {
+        for (status in listOf(429, 503)) {
+            val workspace = WorkspaceHttp(endpoint, "account", { _, _ -> "token" }, client {
+                reply(it, status, "Wait", "text/plain").newBuilder().header("Retry-After", "75").build()
+            })
+            val failure = assertThrows(WorkspaceRequestError::class.java) { workspace.call(command) }
+            assertEquals(if (status == 429) "RATE_LIMITED" else "UNAVAILABLE", failure.code)
+            assertEquals(75_000L, failure.retryAfterMillis)
+            assertFalse(failure.isTransportFailure)
+        }
+        val now = Instant.parse("2026-01-01T00:00:00Z").toEpochMilli()
+        assertEquals(12_000L, retryAfterMillis("Thu, 1 Jan 2026 00:00:12 GMT", now))
+        assertEquals(0L, retryAfterMillis("Wed, 31 Dec 2025 23:59:59 GMT", now))
+        assertNull(retryAfterMillis("-5", now))
+        assertNull(retryAfterMillis("broken", now))
+    }
+
+    @Test fun separatesNetworkFailuresFromAuthAndInvalidResponses() {
+        fun transportError(error: IOException): WorkspaceRequestError {
+            val workspace = WorkspaceHttp(endpoint, "account", { _, _ -> "token" }, client { throw error })
+            return assertThrows(WorkspaceRequestError::class.java) { workspace.call(command) }
+        }
+        val disconnected = transportError(IOException("disconnected"))
+        assertEquals("NETWORK", disconnected.code)
+        assertTrue(disconnected.isTransportFailure)
+        val timeout = transportError(SocketTimeoutException())
+        assertEquals("DEADLINE_EXCEEDED", timeout.code)
+        assertTrue(timeout.isTransportFailure)
+        val authError = WorkspaceHttp(endpoint, "account", { _, _ -> throw WorkspaceRequestError("UNAVAILABLE") },
+            client { error("no API call before receiving a token") })
+        assertFalse(assertThrows(WorkspaceRequestError::class.java) { authError.call(command) }.isTransportFailure)
+        val invalidResponse = WorkspaceHttp(endpoint, "account", { _, _ -> "token" },
+            client { reply(it, 200, "<html>waking up</html>", "text/html") })
+        assertFalse(assertThrows(WorkspaceRequestError::class.java) { invalidResponse.call(command) }.isTransportFailure)
+        assertFalse(IllegalStateException("Room failure").isTransientWorkspaceFailure)
+    }
+
+    @Test fun refreshesProfileTokenOnRequestAndLogsOnlyCorrelationFields() {
+        var forceRefresh = false
+        val operationId = "f1e9f181-7671-426c-8243-65c760223cd8"
+        val categoryId = "2fdc82fc-418b-4bc9-affe-786d4c2a3f78"
+        val workspace = WorkspaceHttp(endpoint, "account-private", { force, _ ->
+            forceRefresh = force
+            "token-private"
+        }, client { reply(it, 200, """{"result":{"seq":13,"title":"response-private"}}""") })
+        workspace.call(mapOf("kind" to "PROFILE", "operation_id" to operationId, "category_id" to categoryId,
+            "payload" to "payload-private"), forceRefresh = true)
+        assertTrue(forceRefresh)
+        val logs = ShadowLog.getLogsForTag("TodoListSync").map { it.msg }
+            .filter { it.contains(operationId) }
+        assertTrue(logs.any { it.contains("stage=android_http_send") })
+        val finished = logs.single { it.contains("stage=android_http_finished") }
+        assertTrue(finished.contains("server_seq=13"))
+        assertTrue(finished.contains(Regex("category_hash=[0-9a-f]{12} ")))
+        for (secret in listOf(categoryId, "account-private", "token-private", "payload-private", "response-private")) {
+            assertTrue(logs.none { it.contains(secret) })
         }
     }
 

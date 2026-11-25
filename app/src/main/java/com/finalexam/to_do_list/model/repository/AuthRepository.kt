@@ -21,7 +21,8 @@ class AuthRepository internal constructor(
     private val executor: Executor,
     private val dispatch: (() -> Unit) -> Unit,
     private val elapsedTime: () -> Long = { SystemClock.elapsedRealtime() },
-    private val onSignOut: (String) -> Unit = {}
+    private val onSignOut: (String) -> Unit = {},
+    private val onProfileChanged: (String) -> Unit = {}
 ) {
     private class Attempt {
         val cancelled = AtomicBoolean(false)
@@ -196,11 +197,13 @@ class AuthRepository internal constructor(
                 } else executor.execute {
                     val cached = runCatching { profiles.cache(updated) }
                     dispatch {
-                        callback(when {
+                        val saved = when {
                             gateway.currentUser?.uid != current.uid -> Result.failure(AuthFailure.CANCELLED)
                             cached.isFailure -> Result.failure(AuthFailure.LOCAL_STORAGE)
                             else -> Result.success(updated)
-                        })
+                        }
+                        saved.onSuccess { onProfileChanged(it.uid) }
+                        callback(saved)
                     }
                 }
             }, { callback(Result.failure(it as? AuthFailure ?: AuthFailure.UNKNOWN)) })
@@ -252,6 +255,9 @@ class AuthRepository internal constructor(
                     onSignOut = { uid ->
                         AccountSession.revoke(app, uid)
                         WorkspaceSync.signOut(app, uid)
+                    },
+                    onProfileChanged = { uid ->
+                        AccountSession.current(app)?.takeIf { it.uid == uid }?.let { WorkspaceSync.profileChanged(app, it) }
                     })
             }.also { instance = it }
         }

@@ -25,6 +25,7 @@ import com.finalexam.to_do_list.controller.home.WorkspaceDialogs.Action
 import com.finalexam.to_do_list.controller.home.WorkspaceDialogs.Tone
 import com.finalexam.to_do_list.databinding.ActivityHomeBinding
 import com.finalexam.to_do_list.model.local.relation.HomeTask
+import com.finalexam.to_do_list.model.local.relation.TrashTask
 import com.finalexam.to_do_list.model.repository.AuthRepository
 import com.finalexam.to_do_list.model.repository.*
 import androidx.lifecycle.Lifecycle
@@ -74,7 +75,7 @@ open class HomeActivity : WorkspaceActivity() {
     private var calendarRefresh: (() -> Unit)? = null
     private var categoryFormOpen = false
     private var profileEditorOpen = false
-    private var trashPageOpen = false
+    private var trashRefresh: TrashRefresh? = null
     private var notificationPageOpen = false
     private var searchPageOpen = false
     private var returnFromNotification: (() -> Unit)? = null
@@ -170,7 +171,8 @@ open class HomeActivity : WorkspaceActivity() {
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
                 WorkspaceSync.changes.collect {
-                    repository.watch()
+                    if (isFinishing || isDestroyed || AccountSession.current(this@HomeActivity) !== session) return@collect
+                    trashRefresh?.refresh()
                     refreshTasks()
                     if (selectedNavigation == 2 && !categoryFormOpen) selectCategory()
                 }
@@ -197,7 +199,7 @@ open class HomeActivity : WorkspaceActivity() {
                     notificationPageOpen -> { notificationPageOpen = false; returnFromNotification?.invoke() ?: showHomeScreen() }
                     searchPageOpen -> { searchPageOpen = false; showHomeScreen() }
                     profileEditorOpen -> { profileEditorOpen = false; showPersonalScreen() }
-                    trashPageOpen -> { trashPageOpen = false; showPersonalScreen() }
+                    trashRefresh != null -> showPersonalScreen()
                     categoryFormOpen -> { categoryFormOpen = false; selectCategory() }
                     selectedNavigation != 0 -> showHomeScreen()
                     else -> finish()
@@ -217,11 +219,6 @@ open class HomeActivity : WorkspaceActivity() {
             repository.start()
             reload()
         }
-    }
-
-    override fun onStop() {
-        if (session != null && AccountSession.current(this) === session) WorkspaceSync.unwatch()
-        super.onStop()
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
@@ -424,6 +421,7 @@ open class HomeActivity : WorkspaceActivity() {
 
     private fun showHomeScreen(item: WorkspaceCategory? = null) {
         selectedNavigation = 0
+        trashRefresh = null
         selectHomeCategory(item)
         selectedDate = null
         calendarRefresh = null
@@ -937,7 +935,7 @@ open class HomeActivity : WorkspaceActivity() {
 
     private fun refreshTasks() {
         repository.loadHome { result ->
-            if (isFinishing || isDestroyed) return@loadHome
+            if (isFinishing || isDestroyed || AccountSession.current(this) !== session) return@loadHome
             result.fold({
                 applyHomeContent(it)
                 render()
@@ -1484,14 +1482,14 @@ open class HomeActivity : WorkspaceActivity() {
     }
 
     private fun showTrashScreen() {
-        trashPageOpen = true
+        val trashSession = session ?: return
         val bg = Color.rgb(246, 247, 251)
         val danger = Color.rgb(194, 65, 79)
         val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setBackgroundColor(bg) }
         val header = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL; setPadding(dp(16), dp(12), dp(16), dp(12)) }
         val back = TextView(this).apply {
             text = "‹"; textSize = 36f; setTextColor(ink); gravity = Gravity.CENTER
-            setOnClickListener { trashPageOpen = false; showPersonalScreen() }
+            setOnClickListener { showPersonalScreen() }
         }
         header.addView(back, LinearLayout.LayoutParams(dp(44), dp(48)))
         val heading = TextView(this).apply { text = "Thùng rác"; textSize = 22f; setTextColor(ink); setTypeface(typeface, Typeface.BOLD) }
@@ -1509,13 +1507,17 @@ open class HomeActivity : WorkspaceActivity() {
         root.addView(scroll, LinearLayout.LayoutParams(-1, 0, 1f))
         setContentView(root)
 
-        fun refresh() {
-            if (!trashPageOpen || isFinishing || isDestroyed) return
-            repository.trash { result ->
-                if (!trashPageOpen || isFinishing || isDestroyed) return@trash
+        fun trashIsCurrent() = trashRefresh != null && root.parent != null && !isFinishing && !isDestroyed &&
+            lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED) && AccountSession.current(this) === trashSession
+
+        trashRefresh = TrashRefresh(
+            isCurrent = ::trashIsCurrent,
+            load = repository::trash,
+            display = { result ->
                 content.removeAllViews()
                 result.fold({ deleted ->
-                    clear.visibility = if (deleted.any { it.role == "OWNER" }) View.VISIBLE else View.GONE
+                    clear.isEnabled = deleted.any { it.role == "OWNER" }
+                    clear.visibility = if (clear.isEnabled) View.VISIBLE else View.GONE
                     if (deleted.isEmpty()) {
                         content.addView(TextView(this).apply {
                             text = "Thùng rác đang trống"; textSize = 15f; setTextColor(muted); gravity = Gravity.CENTER
@@ -1547,10 +1549,9 @@ open class HomeActivity : WorkspaceActivity() {
                                 setOnClickListener {
                                     fun restoreItem(name: String?, finish: ((String?) -> Unit)? = null) {
                                         repository.trashAction(item, false, name) { restored ->
-                                            if (isFinishing || isDestroyed) return@trashAction
+                                            if (!trashIsCurrent()) return@trashAction
                                             restored.onSuccess {
                                                 finish?.invoke(null)
-                                                trashPageOpen = false
                                                 showHomeScreen()
                                                 reload()
                                                 workspaceDialogs.notice("Đã khôi phục " +
@@ -1577,8 +1578,9 @@ open class HomeActivity : WorkspaceActivity() {
                                         item.title + "\nsẽ bị xóa vĩnh viễn. Không thể hoàn tác.",
                                         Action("Xóa vĩnh viễn", Tone.DESTRUCTIVE) {
                                             repository.trashAction(item, true, null) { removed ->
+                                                if (!trashIsCurrent()) return@trashAction
                                                 removed.onSuccess {
-                                                    refresh()
+                                                    trashRefresh?.refresh()
                                                     workspaceDialogs.notice("Đã lưu yêu cầu xóa vĩnh viễn để đồng bộ.")
                                                 }.onFailure {
                                                     workspaceDialogs.notice(it.message ?: "Không thể xóa mục này.", error = true)
@@ -1600,23 +1602,25 @@ open class HomeActivity : WorkspaceActivity() {
                     })
                 })
             }
-        }
+        )
         clear.setOnClickListener {
             workspaceDialogs.confirm(
                 "Dọn sạch thùng rác?",
                 "Các mục bạn sở hữu sẽ bị xóa vĩnh viễn. Không thể hoàn tác.",
                 Action("Dọn sạch", Tone.DESTRUCTIVE) {
                     repository.permanentlyDeleteAll { result ->
-                        result.onSuccess { refresh() }
+                        if (!trashIsCurrent()) return@permanentlyDeleteAll
+                        result.onSuccess { trashRefresh?.refresh() }
                             .onFailure { workspaceDialogs.notice(it.message ?: "Không thể dọn thùng rác.", error = true) }
                     }
                 })
         }
-        refresh()
+        trashRefresh?.refresh()
     }
 
     private fun showPersonalScreen() {
         selectedNavigation = 3
+        trashRefresh = null
         calendarRefresh = null
         val bg = Color.rgb(246, 247, 251)
         val white = Color.WHITE
@@ -1968,4 +1972,29 @@ open class HomeActivity : WorkspaceActivity() {
         setContentView(root)
     }
 
+}
+
+internal class TrashRefresh(
+    private val isCurrent: () -> Boolean,
+    private val load: ((Result<List<TrashTask>>) -> Unit) -> Unit,
+    private val display: (Result<List<TrashTask>>) -> Unit
+) {
+    private var loading = false
+    private var pending = false
+
+    fun refresh() {
+        if (!isCurrent()) return
+        if (loading) {
+            pending = true
+            return
+        }
+        loading = true
+        load { result ->
+            loading = false
+            val again = pending
+            pending = false
+            if (!isCurrent()) return@load
+            if (again) refresh() else display(result)
+        }
+    }
 }

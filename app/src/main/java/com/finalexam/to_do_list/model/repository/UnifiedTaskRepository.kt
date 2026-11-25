@@ -31,7 +31,7 @@ class UnifiedTaskRepository private constructor(private val context: Context) {
                         val value = transaction { work() }
                         if (AccountSession.current(context) === session) {
                             AccountReminders.reconcile(context, this)
-                            WorkspaceSync.request(context, session.uid)
+                            WorkspaceSync.request(context, session)
                             WorkspaceSync.changed()
                         }
                         value
@@ -51,18 +51,10 @@ class UnifiedTaskRepository private constructor(private val context: Context) {
 
     fun categories(callback: (Result<List<WorkspaceCategory>>) -> Unit) = account(currentUid, callback = callback) { categories() }
 
-    fun watch() {
-        val uid = currentUid ?: return WorkspaceSync.unwatch()
-        account(uid, callback = { result ->
-            result.onSuccess { if (currentUid == uid) WorkspaceSync.watch(context, uid, it) }
-        }) { sql.rows("SELECT id FROM categories WHERE revision>0").map { it.string("id") }.toSet() }
-    }
-
     fun start() {
         currentUid?.let { uid ->
             WorkspaceSync.start(context, uid)
             account(uid, callback = {}) { AccountReminders.reconcile(context, this) }
-            watch()
         }
     }
 
@@ -328,7 +320,7 @@ class UnifiedTaskRepository private constructor(private val context: Context) {
             val result = runCatching { work(WorkspaceRemote(app, uid) { AccountSession.current(context) === session }) }
             main.post {
                 if (AccountSession.current(context) === session) {
-                    if (scheduleSync) WorkspaceSync.request(context, uid)
+                    if (scheduleSync) WorkspaceSync.request(context, session, discover = true)
                     callback(result)
                 } else callback(Result.failure(IllegalStateException("Phiên đăng nhập đã thay đổi.")))
             }
