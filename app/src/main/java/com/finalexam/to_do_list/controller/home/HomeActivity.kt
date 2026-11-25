@@ -624,7 +624,6 @@ open class HomeActivity : WorkspaceActivity() {
         content.addView(timeline)
         scroll.addView(content)
         root.addView(scroll, LinearLayout.LayoutParams(-1, 0, 1f))
-        addScreenNavigation(root, 1)
 
         fun renderCalendar() {
             val selected = selectedDate ?: LocalDate.now(zone)
@@ -702,7 +701,7 @@ open class HomeActivity : WorkspaceActivity() {
         nextMonth.setOnClickListener { selectedDate = (selectedDate ?: LocalDate.now(zone)).plusMonths(1); renderCalendar() }
         calendarRefresh = { renderCalendar() }
         renderCalendar()
-        setContentView(root)
+        showScreenWithNavigation(root, 1)
     }
 
     private fun selectCategory() {
@@ -789,8 +788,7 @@ open class HomeActivity : WorkspaceActivity() {
         }
         content.addView(quick)
         scroll.addView(content); root.addView(scroll, LinearLayout.LayoutParams(-1, 0, 1f))
-        addScreenNavigation(root, 2)
-        setContentView(root)
+        showScreenWithNavigation(root, 2)
     }
 
     private fun HomeTask.categoryRef() = CategoryRef(WorkspaceRef(workspaceUid), categoryId)
@@ -875,7 +873,7 @@ open class HomeActivity : WorkspaceActivity() {
         setContentView(root)
     }
 
-    private fun addScreenNavigation(root: LinearLayout, selected: Int) {
+    private fun showScreenWithNavigation(root: LinearLayout, selected: Int, includeTopInset: Boolean = false) {
         val bar = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER; setBackgroundColor(Color.WHITE); setPadding(0, dp(8), 0, dp(8)) }
         listOf("Trang chủ" to R.drawable.ic_home, "Lịch" to R.drawable.ic_calendar, "Danh mục" to R.drawable.ic_grid, "Cá nhân" to R.drawable.ic_person).forEachIndexed { index, pair ->
             val item = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; gravity = Gravity.CENTER; isClickable = true; isFocusable = true; setOnClickListener { notificationPageOpen = false; returnFromNotification = null; when(index) { 0 -> showHomeScreen(); 1 -> selectCalendarDate(); 2 -> selectCategory(); 3 -> showPersonalScreen() } } }
@@ -884,6 +882,8 @@ open class HomeActivity : WorkspaceActivity() {
             bar.addView(item, LinearLayout.LayoutParams(0, dp(56), 1f))
         }
         root.addView(bar)
+        setContentView(root)
+        applyInsets(root, includeTop = includeTopInset)
     }
 
     private fun requireSharingAccount() {
@@ -1384,9 +1384,7 @@ open class HomeActivity : WorkspaceActivity() {
 
         buildReminderContent()
 
-        addScreenNavigation(root, selectedNavigation)
-        setContentView(root)
-        applyInsets(root)
+        showScreenWithNavigation(root, selectedNavigation, includeTopInset = true)
     }
 
     private fun showProfileEditScreen() {
@@ -1963,8 +1961,7 @@ open class HomeActivity : WorkspaceActivity() {
             LinearLayout.LayoutParams(-1, 0, 1f)
         )
 
-        addScreenNavigation(root, 3)
-        setContentView(root)
+        showScreenWithNavigation(root, 3)
     }
 
 }
